@@ -54,6 +54,9 @@ sampler:
   _target_: eval.rollout.Rollout
   config:
     max_episode_len: 280
+    save_video: True
+    save_dir: ${trainer.logger[0].init_args.save_dir}/${trainer.logger[0].init_args.name}
+    num_samples: 2
 
 env:
   _target_: envs.kitchen.KitchenEnv
@@ -78,9 +81,8 @@ trainer:
   callbacks: 
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args:
-        # save the last-k checkpoints
         dirpath: ${trainer.logger[0].init_args.save_dir}/${trainer.logger[0].init_args.name}
-        save_top_k: 5
+        save_top_k: 5         # save the last-k checkpoints
         monitor: step 
         mode: max
         filename: ${trainer.logger[1].init_args.name}-{epoch:02d}-{step}

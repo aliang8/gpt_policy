@@ -215,9 +215,7 @@ class LB_MM_Decoder(pl.LightningModule):
         state_action = state_action.permute(0, 2, 1, 3).reshape(B, 2 * T, -1)
 
         state_action_embs = self.embed_ln(state_action)
-        import ipdb
-
-        ipdb.set_trace()
+        state_action_token_ids = torch.zeros_like(state_action_mask).long()
 
         transformer_outputs = self.model(
             inputs_embeds=state_action_embs,
@@ -226,7 +224,6 @@ class LB_MM_Decoder(pl.LightningModule):
         )
 
         # reshape x so the second dimension corresponds to states (0), actions (1)
-        # B x total_tokens x HD
         model_out = transformer_outputs["last_hidden_state"]
 
         state_action_out = (
@@ -357,3 +354,18 @@ class LB_MM_Decoder(pl.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+
+    def get_action(self, states, actions, **kwargs):
+        # add batch dimension
+        states = states.reshape(1, -1, self.state_dim)
+        actions = actions.reshape(1, -1, self.action_dim)
+        T = states.shape[1]
+        state_mask = torch.ones((1, T)).to(self.device)
+        action_mask = torch.ones((1, T)).to(self.device)
+
+        action_preds = self.forward_state_action(
+            states, actions, state_mask=state_mask, action_mask=action_mask
+        )
+
+        # get the last action predicted
+        return action_preds[-1]

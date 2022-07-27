@@ -1,5 +1,15 @@
 import torch
 from typing import Sized, List
+from functools import partial, reduce
+from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
+
+
+def listdict2dictlist(LD):
+    """Converts a list of dicts to a dict of lists"""
+
+    # Take intersection of keys
+    keys = reduce(lambda x, y: x & y, (map(lambda d: d.keys(), LD)))
+    return AttrDict({k: [dic[k] for dic in LD] for k in keys})
 
 
 def padded_tensor(
