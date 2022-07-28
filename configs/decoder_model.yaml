@@ -1,0 +1,8 @@
+class_path: model.lb_mm_decoder.LB_MM_Decoder
+init_args:
+  model_conf:
+    optim_cls: adam
+    lr: 1e-4
+    hidden_dim: 768
+    state_dim: ${data.init_args.data_conf.state_dim}
+    action_dim: ${data.init_args.data_conf.action_dim}

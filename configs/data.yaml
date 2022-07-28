@@ -1,0 +1,39 @@
+class_path: data.kitchen.KitchenDataModule
+init_args:
+  data_conf: 
+    env_name: kitchen-mixed-v0
+    split:
+      train: 0.8
+      val: 0.2
+    batch_size: 4
+    data_dir: /data/anthony/kitchen/single_ann
+    state_dim: 60
+    action_dim: 9
+
+    dataset_cls: # config for the dataset
+      _target_: data.kitchen.KitchenDataset
+      hparams:
+        load_frac_done: True
+        load_lang: True
+        decoder_model_cls: gpt2
+        subseq_len: 10
+        data_dir: ${data.init_args.data_conf.data_dir} 
+        annotation_file: annotations.json
+        add_lang_before_state: True
+      
+    behavior_dataset_cls: ${data.init_args.data_conf.dataset_cls}
+
+    language_dataset_cls: 
+      _target_: data.language_skills.LanguageSkillsDataset
+      hparams: 
+        data_dir: ${data.init_args.data_conf.data_dir} 
+        vocab_file: kitchen.vocab
+        mapping_file: text_to_emb.pkl
+        annotation_file: annotations.json
+        language_skills_file: skills_small.txt
+
+    dataloader_cls:
+      _target_: data.sampler.RepeatedDataLoader
+      n_repeat: 5
+      num_workers: 4
+      batch_size: 4

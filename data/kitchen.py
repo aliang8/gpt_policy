@@ -212,14 +212,8 @@ class KitchenDataset(BaseDataset):
 
     def _add_masks(self):
         """
-        Create several masks to let model know which timesteps should correspond to language tokens
-        for training decoder model
-
-
-        :return:
-            state_action_lang_attn_mask: which timesteps are language tokens [2*T + num_total_tokens]
-            padding_mask: which timesteps are pad tokens (don't consider them during training)
-            action_mask: which timesteps are action
+        Create several masks to let model know which timesteps should correspond to state/action or language tokens
+        for training model
         """
 
         for seq in self.sequences:
@@ -231,11 +225,21 @@ class KitchenDataset(BaseDataset):
 
             skills = np.stack((seq.skills, seq.skills)).transpose(1, 0).reshape(-1)
             split_indx = np.where(skills[:-1] != skills[1:])[0]
-            split_indx = np.concatenate([split_indx, [len(skills)]])
+            if self.hparams.add_lang_before_state:
+                split_indx = np.concatenate([[0], split_indx])
+            else:
+                split_indx = np.concatenate([split_indx, [len(skills)]])
 
             max_num_tokens = seq.lang_token_ids.shape[-1]
             for i, indx in enumerate(split_indx):
-                start = i * max_num_tokens + indx
+
+                # do we put language first or behavior first?
+                # [lang_tokens, state, action] or [state, action, lang_tokens]
+                if self.hparams.add_lang_before_state:
+                    start = indx
+                else:
+                    start = i * max_num_tokens + indx
+
                 num_tokens = np.sum(seq.lang_attn_masks[i])
                 combined_lang_mask[start : start + num_tokens] = 1
                 combined_state_action_mask[start : start + max_num_tokens] = 0
@@ -244,8 +248,8 @@ class KitchenDataset(BaseDataset):
                 ] = seq.lang_attn_masks[i]
 
             # There are two types of mask
-            # One for combined state_action_lang
-            # One for individual state, action, and language
+            # One for combined state_action_lang [2*T, max_tokens]
+            # One for individual state [T] and action [T]
 
             seq.combined_lang_mask = combined_lang_mask
             seq.combined_state_action_lang_mask = combined_state_action_lang_mask

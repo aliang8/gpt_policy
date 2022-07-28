@@ -1,25 +1,34 @@
 import os
 from model.lb_mm_decoder import LB_MM_Decoder
 from argparse import ArgumentParser
+import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.trainer.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from hydra.utils import instantiate
+from pytorch_lightning.utilities.cli import LightningCLI
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    # trainer = Trainer()
-    # parser = Trainer.add_argparse_args(parser)
-    parser.add_argument("--config-file", type=str, default="")
+    parser.add_argument("--trainer-config-file", type=str, default="")
+    parser.add_argument("--eval-config-file", type=str, default="")
+
     args = parser.parse_args()
 
     # load configs
-    cfg = OmegaConf.load(args.config_file)
-    # trainer.from_argparse_args(cfg)
+    trainer_cfg = OmegaConf.load(args.trainer_config_file)
+    eval_cfg = OmegaConf.load(args.eval_config_file)
 
-    ckpt_dir = os.path.join(cfg.trainer.logger[0].init_args.save_dir, cfg.trainer.logger[0].init_args.name)
-    ckpt_path = os.path.join(ckpt_dir, "test-epoch=49-global_step=0.ckpt")
+    ckpt_dir = os.path.join(
+        trainer_cfg.logger[0].init_args.save_dir,
+        trainer_cfg.logger[0].init_args.name,
+    )
+    ckpt_path = os.path.join(
+        ckpt_dir, "language_then_behavior-epoch=58-step=35400.ckpt"
+    )
 
+    print(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
 
     # load the model
@@ -28,8 +37,11 @@ if __name__ == "__main__":
     model.eval()
 
     # create environment
-    env = instantiate(cfg.env)
+    env = instantiate(eval_cfg.env)
 
     # create rollout helper
-    rollout = instantiate(cfg.sampler, env=env, agent=model)
+    eval_cfg.sampler.config.save_dir = ckpt_dir
+    rollout = instantiate(eval_cfg.sampler, env=env, agent=model)
+
+    # collect trajectories
     episode = rollout.rollout_multi_episode()

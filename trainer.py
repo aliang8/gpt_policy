@@ -7,6 +7,11 @@ from model.lb_mm_transformer import LB_MM_Transformer
 from data.kitchen import KitchenDataset
 
 
+class MyLightingCLI(LightningCLI):
+    def add_arguments_to_parser(self, parser):
+        parser.link_arguments("data.batch_size", "model.batch_size")
+
+
 if __name__ == "__main__":
     cli = LightningCLI(
         model_class=pl.LightningModule,

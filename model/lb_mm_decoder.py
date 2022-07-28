@@ -43,8 +43,8 @@ class LB_MM_Decoder(pl.LightningModule):
 
         self.model = gpt_decoder
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            "gpt2", padding=True, return_tensors="np"
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "gpt2", padding=True, return_tensors="pt"
         )
 
         # add special tokens to distinguish action from text
@@ -59,10 +59,10 @@ class LB_MM_Decoder(pl.LightningModule):
                 "<NLEOS>",
             ],
         }
-        tokenizer.add_special_tokens(special_tokens_dict=special_tokens)
+        self.tokenizer.add_special_tokens(special_tokens_dict=special_tokens)
 
         # because we added special tokens
-        self.model.resize_token_embeddings(len(tokenizer))
+        self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.state_dim = self.hparams.state_dim
         self.action_dim = self.hparams.action_dim
@@ -83,7 +83,9 @@ class LB_MM_Decoder(pl.LightningModule):
         )
 
         # output head for next token prediction
-        self.lm_head = nn.Linear(self.decoder_config.n_embd, len(tokenizer), bias=False)
+        self.lm_head = nn.Linear(
+            self.decoder_config.n_embd, len(self.tokenizer), bias=False
+        )
 
         # loss functions
         self.action_loss_fn = torch.nn.MSELoss(reduction="none")
@@ -100,26 +102,27 @@ class LB_MM_Decoder(pl.LightningModule):
         B, T, _ = actions.shape
 
         # a bunch of useful masks
-        masks = (
+        masks = [
             kwargs.get("combined_lang_mask", None),
-            kwargs.get("combined_state_action_lang_mask", None),
             kwargs.get("combined_state_action_mask", None),
+            kwargs.get("combined_state_action_lang_mask", None),
             kwargs.get("state_mask", None),
             kwargs.get("action_mask", None),
-        )
-        for mask in masks:
-            if mask:
-                mask = mask.bool()
+        ]
+
+        for i, mask in enumerate(masks):
+            if mask is not None:
+                masks[i] = mask.bool()
 
         (
             combined_lang_mask,
-            combined_state_action_lang_mask,
             combined_state_action_mask,
+            combined_state_action_lang_mask,
             state_mask,
             action_mask,
         ) = masks
 
-        if lang_attn_masks:
+        if lang_attn_masks is not None:
             lang_mask = lang_attn_masks.bool()
 
         # mask out padded state, actions
@@ -141,7 +144,7 @@ class LB_MM_Decoder(pl.LightningModule):
         state_action = torch.stack((state_embeddings, action_embeddings), dim=1)
         state_action = state_action.permute(0, 2, 1, 3).reshape(B, 2 * T, -1)
 
-        # create a new tensor to append the language description after state/action sequence
+        # create a new tensor to append the language description before or after state/action sequence
         # (s_0, a_0, s_1, a_1, ..., tok_1_A, tok_2_A, ...)
         state_action_lang = torch.zeros(
             (*combined_state_action_lang_mask.shape[:2], self.embed_dim),
@@ -276,17 +279,17 @@ class LB_MM_Decoder(pl.LightningModule):
         """
 
         # Paired language and behavior
-        if states and lang_token_ids:
+        if states is not None and lang_token_ids is not None:
             return self.forward_state_action_lang(
                 states, actions, lang_token_ids, lang_attn_masks, **kwargs
             )
 
         # Only behavior
-        if states and not lang_token_ids:
+        if states is not None and lang_token_ids is None:
             return self.forward_state_action(states, actions, **kwargs)
 
         # Only language
-        if not states and lang_token_ids:
+        if states is None and lang_token_ids is not None:
             return self.forward_lang(lang_token_ids, lang_attn_masks, **kwargs)
 
     def _compute_prediction_loss(
@@ -356,6 +359,9 @@ class LB_MM_Decoder(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
     def get_action(self, states, actions, **kwargs):
+        """
+        Run inference on model to decode a_t given s_0 ... s_t and a_0 ... a_t-1.
+        """
         # add batch dimension
         states = states.reshape(1, -1, self.state_dim)
         actions = actions.reshape(1, -1, self.action_dim)
@@ -368,4 +374,51 @@ class LB_MM_Decoder(pl.LightningModule):
         )
 
         # get the last action predicted
+        return action_preds[-1]
+
+    def get_language_conditioned_action(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        lang_token_ids: torch.Tensor,
+        lang_attn_masks: torch.Tensor,
+        **kwargs,
+    ):
+        """
+        Run inference on model to decode a_t given s_0 ... s_t, a_0 ... a_t-1 and lang annotation.
+        """
+
+        states = states.reshape(1, -1, self.state_dim)
+        actions = actions.reshape(1, -1, self.action_dim)
+        T = states.shape[1]
+        state_mask = torch.ones((1, T)).to(self.device)
+        action_mask = torch.ones((1, T)).to(self.device)
+
+        num_tokens = lang_token_ids.shape[-1]
+        combined_lang_mask = torch.zeros((1, num_tokens + 2 * T)).to(self.device)
+        combined_lang_mask[:, :num_tokens] = 1
+        combined_lang_mask = combined_lang_mask.bool()
+        combined_state_action_mask = ~combined_lang_mask
+
+        # attend to all tokens
+        combined_state_action_lang_mask = torch.ones_like(combined_lang_mask)
+
+        masks = dict(
+            state_mask=state_mask,
+            action_mask=action_mask,
+            combined_lang_mask=combined_lang_mask,
+            combined_state_action_mask=combined_state_action_mask,
+            combined_state_action_lang_mask=combined_state_action_lang_mask,
+        )
+
+        lang_token_ids = lang_token_ids.unsqueeze(1).to(self.device)
+        lang_attn_masks = lang_attn_masks.unsqueeze(1).to(self.device)
+
+        action_preds, _ = self.forward_state_action_lang(
+            states,
+            actions,
+            lang_token_ids=lang_token_ids,
+            lang_attn_masks=lang_attn_masks,
+            **masks,
+        )
         return action_preds[-1]

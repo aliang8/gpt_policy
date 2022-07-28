@@ -10,6 +10,7 @@ from envs.base import BaseEnvironment
 from utils.pytorch_utils import ten2ar
 from utils.viz_utils import save_episode_as_video
 from utils.data_utils import listdict2dictlist
+from data.kitchen import LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
 
 class Rollout:
@@ -27,6 +28,12 @@ class Rollout:
         self._episode_step, self._episode_reward = 0, 0
         self.device = "cuda"
 
+        if self.config.prompt:
+            self.prompt = self._agent.tokenizer(
+                f"{LANG_BOS_TOKEN} {self.config.prompt} {LANG_EOS_TOKEN}",
+                return_tensors="pt",
+            )
+
     def reset(self):
         self._episode_step, self._episode_reward = 0, 0.0
         obs = self._env.reset()
@@ -38,10 +45,18 @@ class Rollout:
 
     def get_action(self, states, actions):
         with torch.no_grad():
-            action_pred = self._agent.get_action(
-                states=states,
-                actions=actions,
-            )
+            if self.config.prompt:
+                action_pred = self._agent.get_language_conditioned_action(
+                    states=states,
+                    actions=actions,
+                    lang_token_ids=self.prompt.input_ids,
+                    lang_attn_masks=self.prompt.attention_mask,
+                )
+            else:
+                action_pred = self._agent.get_action(
+                    states=states,
+                    actions=actions,
+                )
         return action_pred
 
     def rollout_multi_episode(self):
@@ -50,8 +65,12 @@ class Rollout:
             episode = self.rollout_single_episode()
 
             if self.config.save_video:
-                filename = os.path.join(self.config.save_dir, f"video_{i}.mp4")
-                save_episode_as_video(episode, filename=filename, caption="")
+                filename = os.path.join(
+                    self.config.save_dir, f"{self.config.video_prefix}_video_{i}.mp4"
+                )
+                save_episode_as_video(
+                    episode, filename=filename, caption=self.config.prompt
+                )
         return episodes
 
     def rollout_single_episode(self):
