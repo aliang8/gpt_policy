@@ -2,11 +2,11 @@ logger:
   - class_path: pytorch_lightning.loggers.TensorBoardLogger
     init_args:
       save_dir: /data/anthony/gpt_transformer/logs
-      name: language_then_behavior
+      name: gaussian_mlp
   - class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
-      save_dir: ${trainer.logger[0].init_args.save_dir}
-      name: ${trainer.logger[0].init_args.name}
+      save_dir: ${logger[0].init_args.save_dir}
+      name: ${logger[0].init_args.name}
       entity: clvr
       project: gpt_lang_transformer
 
@@ -15,11 +15,11 @@ enable_checkpointing: true
 callbacks: 
   - class_path: pytorch_lightning.callbacks.ModelCheckpoint
     init_args:
-      dirpath: ${trainer.logger[0].init_args.save_dir}/${trainer.logger[0].init_args.name}
+      dirpath: ${logger[0].init_args.save_dir}/${logger[0].init_args.name}
       save_top_k: 5         # save the last-k checkpoints
       monitor: step 
       mode: max
-      filename: ${trainer.logger[1].init_args.name}-{epoch:02d}-{step}
+      filename: ${logger[1].init_args.name}-{epoch:02d}-{step}
 
 default_root_dir: null
 gradient_clip_val: null

@@ -66,6 +66,7 @@ class LB_MM_Decoder(pl.LightningModule):
 
         self.state_dim = self.hparams.state_dim
         self.action_dim = self.hparams.action_dim
+        self.output_gaussian = self.hparams.output_gaussian
         self.embed_dim = self.hparams.hidden_dim
 
         # embedding heads each modality before inputting to transformer
@@ -74,10 +75,17 @@ class LB_MM_Decoder(pl.LightningModule):
         self.embed_ln = nn.LayerNorm(self.embed_dim)
 
         # output head for predicting action
-        action_tanh = True
+        action_tanh = False
         self.predict_action = nn.Sequential(
             *(
-                [nn.Linear(self.embed_dim, self.action_dim)]
+                [
+                    nn.Linear(
+                        self.embed_dim,
+                        self.action_dim * 2
+                        if self.output_gaussian
+                        else self.action_dim,
+                    )
+                ]
                 + ([nn.Tanh()] if action_tanh else [])
             )
         )
@@ -88,7 +96,10 @@ class LB_MM_Decoder(pl.LightningModule):
         )
 
         # loss functions
-        self.action_loss_fn = torch.nn.MSELoss(reduction="none")
+        if self.output_gaussian:
+            self.action_loss_fn = torch.nn.GaussianNLLLoss(reduction="none")
+        else:
+            self.action_loss_fn = torch.nn.MSELoss(reduction="none")
         self.lang_loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
     def forward_state_action_lang(
@@ -302,9 +313,15 @@ class LB_MM_Decoder(pl.LightningModule):
         lang_token_mask: torch.Tensor,
     ):
         # compute action prediction loss on valid actions
-        action_pred_loss = self.action_loss_fn(
-            action_preds, target_actions[action_mask.bool()]
-        )
+        if self.output_gaussian:
+            mean, logvar = torch.chunk(action_preds, 2, dim=-1)
+            action_pred_loss = self.action_loss_fn(
+                input=mean, target=target_actions[action_mask.bool()], var=logvar.exp()
+            )
+        else:
+            action_pred_loss = self.action_loss_fn(
+                action_preds, target_actions[action_mask.bool()]
+            )
         action_pred_loss = action_pred_loss.mean()
 
         # predict next language skill given current skill as context

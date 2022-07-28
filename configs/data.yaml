@@ -17,16 +17,16 @@ init_args:
         load_lang: True
         decoder_model_cls: gpt2
         subseq_len: 10
-        data_dir: ${data.init_args.data_conf.data_dir} 
+        data_dir: ${init_args.data_conf.data_dir} 
         annotation_file: annotations.json
         add_lang_before_state: True
       
-    behavior_dataset_cls: ${data.init_args.data_conf.dataset_cls}
+    behavior_dataset_cls: ${init_args.data_conf.dataset_cls}
 
     language_dataset_cls: 
       _target_: data.language_skills.LanguageSkillsDataset
       hparams: 
-        data_dir: ${data.init_args.data_conf.data_dir} 
+        data_dir: ${init_args.data_conf.data_dir} 
         vocab_file: kitchen.vocab
         mapping_file: text_to_emb.pkl
         annotation_file: annotations.json

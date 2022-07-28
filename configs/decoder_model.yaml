@@ -4,5 +4,8 @@ init_args:
     optim_cls: adam
     lr: 1e-4
     hidden_dim: 768
-    state_dim: ${data.init_args.data_conf.state_dim}
-    action_dim: ${data.init_args.data_conf.action_dim}
+    # state_dim: ${data.init_args.data_conf.state_dim}
+    state_dim: 60
+    # action_dim: ${data.init_args.data_conf.action_dim}
+    action_dim: 9
+    output_gaussian: True
