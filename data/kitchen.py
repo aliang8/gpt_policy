@@ -5,6 +5,7 @@ import d4rl
 import json
 import torch
 import numpy as np
+from itertools import starmap
 import pytorch_lightning as pl
 from torch.utils.data import random_split, DataLoader, Dataset
 from typing import Optional, Dict, List, Any
@@ -12,20 +13,12 @@ from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from pytorch_lightning.utilities.cli import DATAMODULE_REGISTRY
 from pytorch_lightning.trainer.supporters import CombinedLoader
 from utils.data_utils import padded_tensor, padded_3d
+from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
 from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-
-from transformers import AutoTokenizer
 from data.dataset import BaseDataset
-
-
-ACT_TOKEN = "<ACT>"
-LANG_BOS_TOKEN = "<LBOS>"
-LANG_EOS_TOKEN = "<LEOS>"
-NEXT_LANG_BOS_TOKEN = "<NLBOS>"
-NEXT_LANG_EOS_TOKEN = "<NLEOS>"
 
 
 class KitchenDataset(BaseDataset):
@@ -63,36 +56,43 @@ class KitchenDataset(BaseDataset):
         self.dataset = dataset
         self.sequences = self._split_dataset_into_sequences()
 
+        self.dataset_stats = self._compute_dataset_stats()
         self._add_skill_info()
 
         if self.hparams.load_lang:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.hparams.decoder_model_cls,
-                return_tensors="np",
-            )
-
-            # add special tokens
-            special_tokens = {
-                "bos_token": "<BOS>",
-                "eos_token": "<EOS>",
-                "pad_token": "[PAD]",
-                "additional_special_tokens": [
-                    ACT_TOKEN,
-                    LANG_BOS_TOKEN,
-                    LANG_EOS_TOKEN,
-                    NEXT_LANG_BOS_TOKEN,
-                    NEXT_LANG_EOS_TOKEN,
-                ],
-            }
-            self.tokenizer.add_special_tokens(special_tokens_dict=special_tokens)
+            self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
             self.skill_to_token_map = self._get_lang_tokens()
 
             self._add_language_annotations()
             self._add_masks()
 
-        del self.sequences[508]
+        del self.sequences[508]  # too long for the model
 
         self.data = self.sequences
+
+        # bin actions for each dimension
+        if self.hparams.discretize_actions:
+            self._discretize_actions()
+
+    def _compute_dataset_stats(self):
+        # find the max and min action value for each dim
+        max_actions = []
+        min_actions = []
+        # collect max and min for each sequence
+        for seq in self.sequences:
+            max_action = np.max(seq.actions, axis=0)
+            min_action = np.min(seq.actions, axis=0)
+            max_actions.append(max_action)
+            min_actions.append(min_action)
+
+        # compare max and min over all sequences
+        max_actions = np.stack(max_actions)
+        min_actions = np.stack(min_actions)
+        max_value = np.max(max_actions, axis=0)
+        min_value = np.min(min_actions, axis=0)
+
+        stats = {"min_action": min_value, "max_action": max_value}
+        return stats
 
     def _split_dataset_into_sequences(self):
         """
@@ -214,6 +214,9 @@ class KitchenDataset(BaseDataset):
         """
         Create several masks to let model know which timesteps should correspond to state/action or language tokens
         for training model
+
+        pre - (lang_tokens, s_0, a_0, s_1, a_0, ..., s_t, a_t)
+        post - (s_0, a_0, s_1, a_0, ..., s_t, a_t, lang_tokens)
         """
 
         for seq in self.sequences:
@@ -257,6 +260,24 @@ class KitchenDataset(BaseDataset):
 
             seq.state_mask = np.ones((seq.states.shape[0],))
             seq.action_mask = np.ones((seq.actions.shape[0],))
+
+    def _discretize_actions(self):
+        min_v, max_v = (
+            self.dataset_stats["min_action"],
+            self.dataset_stats["max_action"],
+        )
+
+        # create bins for each dimension
+        bins = np.linspace(min_v, max_v, num=self.hparams.num_bins, axis=1)
+
+        for seq in self.sequences:
+            action = seq.actions
+            # map lambda to each action in sequence
+            # for each action, we want to digitize each element
+            discretized_action = np.array(
+                list(map(lambda x: list(starmap(np.digitize, zip(x, bins))), action))
+            )
+            seq.action = discretized_action
 
     def collate_fn(self, data):
         # custom collate fn for pad on the fly and sorted examples
@@ -320,7 +341,7 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         Also add skill progress for training a done predictor.
         """
 
-        semantic_seqs = []
+        all_semantic_seqs = []
 
         for seq in self.sequences:
             # identify the start of semantic skill
@@ -339,8 +360,8 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
                 semantic_seqs.append(semantic_seq)
                 start = end + 1
 
-            semantic_seqs.extend(semantic_seqs)
-        return semantic_seqs
+            all_semantic_seqs.extend(semantic_seqs)
+        return all_semantic_seqs
 
     def _add_language_annotations(self):
         for i, seq in enumerate(self.data):
@@ -361,41 +382,188 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
                 "attention_mask"
             ]
 
-    def collate_fn(self, data):
-        # custom collate fn for pad on the fly and sorted examples
-        # sort examples by sequence length so we batch together the longest sequences
-        # also pad per batch instead of padding to max length
-        bs = len(data)
-        output = AttrDict()
-        for k in list(data[0].keys()):
-            vs = [torch.Tensor(data[i][k]) for i in range(bs)]
+    # def collate_fn(self, data):
+    #     # custom collate fn for pad on the fly and sorted examples
+    #     # sort examples by sequence length so we batch together the longest sequences
+    #     # also pad per batch instead of padding to max length
+    #     bs = len(data)
+    #     output = AttrDict()
+    #     for k in list(data[0].keys()):
+    #         vs = [torch.Tensor(data[i][k]) for i in range(bs)]
 
-            # pad all to the same length
-            if len(vs[0].shape) == 1:
-                output[k], _ = padded_tensor(vs, pad_idx=0, left_padded=False)
-            elif len(vs[0].shape) == 2:
-                output[k] = padded_3d(vs, pad_idx=0, dtype=torch.float)
-        return output
+    #         # pad all to the same length
+    #         if len(vs[0].shape) == 1:
+    #             output[k], _ = padded_tensor(vs, pad_idx=0, left_padded=False)
+    #         elif len(vs[0].shape) == 2:
+    #             output[k] = padded_3d(vs, pad_idx=0, dtype=torch.float)
+    #     return output
 
-    def get_sampler(self, indices):
-        cfg = OmegaConf.create(self.hparams["dataset_sampler_cls"])
+    # def get_sampler(self, indices):
+    #     cfg = OmegaConf.create(self.hparams["dataset_sampler_cls"])
 
-        lens = [self.data[i]["states"].shape[0] for i in range(len(self.data))]
-        sampler = instantiate(
-            cfg,
-            indices=indices,
-            lengths=lens,
-            is_distributed=False,
-            shuffle=True,
-            drop_last=False,
-        )
-        return sampler
+    #     lens = [self.data[i]["states"].shape[0] for i in range(len(self.data))]
+    #     sampler = instantiate(
+    #         cfg,
+    #         indices=indices,
+    #         lengths=lens,
+    #         is_distributed=False,
+    #         shuffle=True,
+    #         drop_last=False,
+    #     )
+    #     return sampler
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+
+class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
+    def __init__(self, dataset: List, *args, **kwargs):
+        self.hparams = kwargs["hparams"]
+        self.dataset = dataset
+        # split data into sequences
+        self.sequences = self._split_dataset_into_sequences()
+
+        # add skill annotations
+        self._add_skill_info()
+
+        # split sequences into individual semantic skills
+        self.sequences = self._split_by_semantic_skills()
+
+        # add language annotations
+        if self.hparams.load_lang:
+            self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
+            self.skill_to_token_map = self._get_lang_tokens()
+
+            self._add_language_annotations()
+
+        # combine everything into a single sequence
+        full_sequence = []
+        token_type_ids = []
+        state_mask = []
+        action_mask = []
+        lang_token_mask = []
+        # lang_attn_mask = []
+        all_states = []
+        all_actions = []
+
+        start = 0
+
+        for seq in self.sequences:
+            states, actions, lang_tokens, lang_attn = (
+                seq["states"],
+                seq["actions"],
+                seq["lang_token_ids"],
+                seq["lang_attention_mask"],
+            )
+
+            # ignore pads
+            num_lang_tokens = sum(lang_attn)
+
+            all_states.append(states)
+            all_actions.append(actions)
+
+            T, action_dim = actions.shape
+            if self.hparams.get("discretize_actions", False):
+                total_num_tokens = T + action_dim * T + num_lang_tokens
+            else:
+                total_num_tokens = 2 * T + num_lang_tokens
+
+            concat_sequence = np.zeros((total_num_tokens))
+            lang_token_mask_ = np.zeros((total_num_tokens))
+            # lang_attn_mask_ = np.zeros((total_num_tokens))
+            action_mask_ = np.zeros((total_num_tokens))
+            state_mask_ = np.zeros((total_num_tokens))
+
+            if self.hparams.prepend_lang:  # add language before state/action
+                lang_r = slice(0, num_lang_tokens)
+                state_r = slice(num_lang_tokens, total_num_tokens, 2)
+                action_r = slice(num_lang_tokens + 1, total_num_tokens, 2)
+
+                lang_token_mask_[lang_r] = 1
+                # lang_attn_mask_[lang_r] = lang_attn
+                state_mask_[state_r] = 1
+                action_mask_[action_r] = 1
+                concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
+                concat_sequence[state_r] = np.arange(start, start + T)
+                concat_sequence[action_r] = np.arange(start, start + T)
+            else:
+                lang_token_mask_[-num_lang_tokens:] = 1
+                state_mask_[:T] = 1
+                action_mask_[T : 2 * T] = 1
+                concat_sequence[-num_lang_tokens:] = lang_tokens
+
+            token_type_id = 0 * state_mask_ + action_mask_ + 2 * lang_token_mask_
+            full_sequence.append(concat_sequence)
+            token_type_ids.append(token_type_id)
+            state_mask.append(state_mask_)
+            action_mask.append(action_mask_)
+            lang_token_mask.append(lang_token_mask_)
+            # lang_attn_mask.append(lang_attn_mask_)
+
+            start += T
+
+        # flatten
+        full_sequence = np.concatenate(full_sequence)
+        token_type_ids = np.concatenate(token_type_ids)
+        state_mask = np.concatenate(state_mask)
+        action_mask = np.concatenate(action_mask)
+        lang_token_mask = np.concatenate(lang_token_mask)
+        # lang_attn_mask = np.concatenate(lang_attn_mask)
+        all_states = np.concatenate(all_states)
+        all_actions = np.concatenate(all_actions)
+
+        # chunk
+        self.chunks = []
+        chunk_size = self.hparams.chunk_size
+
+        i = 0
+        while i < len(full_sequence):
+            if i + chunk_size > len(full_sequence):  # need to drop the last chunk
+                break
+
+            r = slice(i, i + chunk_size)
+
+            # try to get an even number of states and actions
+            j = 1
+            while state_mask[r].sum() != action_mask[r].sum():
+                r = slice(i, i + chunk_size + j)
+                j += 1
+
+            i += chunk_size + j - 1
+
+            state_indices = full_sequence[r][state_mask[r].astype(np.bool)]
+            action_indices = full_sequence[r][action_mask[r].astype(np.bool)]
+            states = np.take(all_states, state_indices.astype(np.bool), axis=0)
+            actions = np.take(all_actions, action_indices.astype(np.bool), axis=0)
+
+            self.chunks.append(
+                {
+                    "tokens": full_sequence[r],
+                    "states": states,
+                    "actions": actions,
+                    "state_mask": np.ones(len(states)),
+                    "action_mask": np.ones(len(actions)),
+                    "combined_state_mask": state_mask[r],
+                    "combined_action_mask": action_mask[r],
+                    "lang_token_mask": lang_token_mask[r],
+                    "token_type_ids": token_type_ids[r],
+                }
+            )
+
+    def _add_language_annotations(self):
+        for _, seq in enumerate(self.sequences):
+            skill = self.OBJS[int(seq.skills[0])]
+            seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
+            seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
+
+    def __len__(self):
+        return len(self.chunks)
+
+    def __getitem__(self, idx):
+        return self.chunks[idx]
 
 
 class KitchenSequenceDataset(SemanticSkillsKitchenDataset):
@@ -495,7 +663,7 @@ class KitchenDataModule(pl.LightningDataModule):
             self.kitchen_dataset = instantiate(
                 cfg, dataset=self.dataset, _recursive_=False
             )
-            num_tr, num_val = self.split_tr_and_val(self.kitchen_dataset.data)
+            num_tr, num_val = self.split_tr_and_val(self.kitchen_dataset)
             self.train, self.val = random_split(self.kitchen_dataset, [num_tr, num_val])
 
     def train_dataloader(self):
@@ -550,7 +718,7 @@ class LanguageBehaviorDataModule(KitchenDataModule):
 
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
-            num_tr, num_val = self.split_tr_and_val(self.behavior_dataset.semantic_seqs)
+            num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
             self.behavior_train, self.behavior_val = random_split(
                 self.behavior_dataset, [num_tr, num_val]
             )
@@ -558,3 +726,49 @@ class LanguageBehaviorDataModule(KitchenDataModule):
             self.lang_train, self.lang_val = random_split(
                 self.lang_dataset, [num_tr, num_val]
             )
+
+    def train_dataloader(self):
+        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
+
+        lang_dl = instantiate(
+            cfg,
+            dataset=self.lang_train,
+            pin_memory=True,
+            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+        )
+        paired_dl = instantiate(
+            cfg,
+            dataset=self.behavior_train,
+            pin_memory=True,
+            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            batch_sampler=self.behavior_dataset.get_sampler(
+                self.behavior_train.indices
+            ),
+            collate_fn=self.behavior_dataset.collate_fn,
+        )
+
+        loaders = {"language": lang_dl, "paired": paired_dl}
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
+        return combined_loader
+
+    def val_dataloader(self):
+        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
+
+        lang_dl = instantiate(
+            cfg,
+            dataset=self.lang_val,
+            pin_memory=True,
+            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+        )
+        paired_dl = instantiate(
+            cfg,
+            dataset=self.behavior_val,
+            pin_memory=True,
+            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            batch_sampler=self.behavior_dataset.get_sampler(self.behavior_val.indices),
+            collate_fn=self.behavior_dataset.collate_fn,
+        )
+
+        loaders = {"language": lang_dl, "paired": paired_dl}
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
+        return combined_loader

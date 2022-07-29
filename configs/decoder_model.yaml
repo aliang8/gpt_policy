@@ -1,6 +1,7 @@
-class_path: model.lb_mm_decoder.LB_MM_Decoder
+class_path: model.lb_single_seq_decoder.LB_SingleSeq_Decoder # model.lb_mm_decoder.LB_MM_Decoder
 init_args:
   model_conf:
+    decoder_model_cls: gpt2
     optim_cls: adam
     lr: 1e-4
     hidden_dim: 768
@@ -8,4 +9,6 @@ init_args:
     state_dim: 60
     # action_dim: ${data.init_args.data_conf.action_dim}
     action_dim: 9
-    output_gaussian: True
+    output_gaussian: False
+    discretize_actions: False
+    num_bins: 256

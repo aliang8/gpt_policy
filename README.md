@@ -37,3 +37,9 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue trainer.py --config configs/d
 ```
 CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue evaluate.py --config configs/decoder.yaml
 ```
+
+TODO: 
+[x] Add Gaussian MLP output
+[] Evaluate transformer BC
+[] Discretize action into bins
+[] Add language dataset support

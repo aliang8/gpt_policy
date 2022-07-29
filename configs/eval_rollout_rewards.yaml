@@ -1,9 +1,9 @@
 sampler:
   _target_: eval.rollout.Rollout
   config:
-    max_episode_len: 100
-    save_video: True
-    num_samples: 2
+    max_episode_len: 280
+    save_video: False
+    num_samples: 50
     # prompt: open the sliding cabinet
     # video_prefix: prompting_sliding_cabinet
     prompt: null
@@ -14,4 +14,4 @@ sampler:
 env:
   _target_: envs.kitchen.KitchenEnv
   config:
-    name: kitchen-mixed-v0  # kitchen-all-tasks-v0
+    name: kitchen-all-tasks-v0  # kitchen-all-tasks-v0

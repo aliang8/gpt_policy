@@ -1,4 +1,5 @@
 import os
+import glob
 from model.lb_mm_decoder import LB_MM_Decoder
 from argparse import ArgumentParser
 import pytorch_lightning as pl
@@ -11,22 +12,18 @@ from pytorch_lightning.utilities.cli import LightningCLI
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--trainer-config-file", type=str, default="")
     parser.add_argument("--eval-config-file", type=str, default="")
 
     args = parser.parse_args()
 
-    # load configs
-    trainer_cfg = OmegaConf.load(args.trainer_config_file)
+    # load config
     eval_cfg = OmegaConf.load(args.eval_config_file)
 
-    ckpt_dir = os.path.join(
-        trainer_cfg.logger[0].init_args.save_dir,
-        trainer_cfg.logger[0].init_args.name,
-    )
-    ckpt_path = os.path.join(
-        ckpt_dir, "language_then_behavior-epoch=58-step=35400.ckpt"
-    )
+    save_dir = eval_cfg.sampler.config.save_dir
+    exp_name = eval_cfg.sampler.config.exp_name
+    ckpt_dir = os.path.join(save_dir, exp_name)
+    ckpts = glob.glob(ckpt_dir + "/*.ckpt")
+    ckpt_path = ckpts[-1]
 
     print(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
@@ -40,7 +37,6 @@ if __name__ == "__main__":
     env = instantiate(eval_cfg.env)
 
     # create rollout helper
-    eval_cfg.sampler.config.save_dir = ckpt_dir
     rollout = instantiate(eval_cfg.sampler, env=env, agent=model)
 
     # collect trajectories

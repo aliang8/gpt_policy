@@ -24,6 +24,7 @@ class Rollout:
         self._env = env
         self._agent = agent
         self.config = config
+        self.save_dir = os.path.join(config.save_dir, config.exp_name)
 
         self._episode_step, self._episode_reward = 0, 0
         self.device = "cuda"
@@ -61,16 +62,22 @@ class Rollout:
 
     def rollout_multi_episode(self):
         episodes = []
+        avg_num_completed_tasks = 0
         for i in tqdm.tqdm(range(self.config.num_samples)):
             episode = self.rollout_single_episode()
+            completed = episode.info[-1]["completed_tasks"]
+            # print(f"rollout {i}: completed_tasks: {completed}")
+            avg_num_completed_tasks += len(completed)
 
             if self.config.save_video:
                 filename = os.path.join(
-                    self.config.save_dir, f"{self.config.video_prefix}_video_{i}.mp4"
+                    self.save_dir, f"{self.config.video_prefix}_video_{i}.mp4"
                 )
                 save_episode_as_video(
                     episode, filename=filename, caption=self.config.prompt
                 )
+        avg_num_completed_tasks /= self.config.num_samples
+        print(avg_num_completed_tasks)
         return episodes
 
     def rollout_single_episode(self):
