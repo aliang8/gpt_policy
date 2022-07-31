@@ -1,6 +1,7 @@
 import os
 import glob
 from model.lb_mm_decoder import LB_MM_Decoder
+from model.lb_single_seq_decoder import LB_SingleSeq_Decoder
 from argparse import ArgumentParser
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
@@ -23,13 +24,14 @@ if __name__ == "__main__":
     exp_name = eval_cfg.sampler.config.exp_name
     ckpt_dir = os.path.join(save_dir, exp_name)
     ckpts = glob.glob(ckpt_dir + "/*.ckpt")
-    ckpt_path = ckpts[-1]
+    ckpt_path = sorted(ckpts)[-1]
 
     print(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
 
     # load the model
-    model = LB_MM_Decoder.load_from_checkpoint(checkpoint_path=ckpt_path)
+    # TODO: fix this
+    model = LB_SingleSeq_Decoder.load_from_checkpoint(checkpoint_path=ckpt_path)
     model = model.cuda()
     model.eval()
 

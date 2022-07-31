@@ -9,7 +9,7 @@ sampler:
     prompt: null
     video_prefix: transformerBC
     save_dir: /data/anthony/gpt_transformer/logs
-    exp_name: transformerBC
+    exp_name: transformerBC_paired_and_lang_pred_done
 
 env:
   _target_: envs.kitchen.KitchenEnv

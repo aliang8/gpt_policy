@@ -40,6 +40,11 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue evaluate.py --config configs/
 
 TODO: 
 [x] Add Gaussian MLP output
+
 [] Evaluate transformer BC
+
 [] Discretize action into bins
+
 [] Add language dataset support
+
+[] Combine lang-only and paired

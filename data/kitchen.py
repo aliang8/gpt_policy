@@ -2,6 +2,7 @@ import os
 import gym
 import tqdm
 import d4rl
+import math
 import json
 import torch
 import numpy as np
@@ -448,8 +449,14 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # lang_attn_mask = []
         all_states = []
         all_actions = []
+        dones = []
 
         start = 0
+
+        # combine every state/action/language into a long sequence
+        # L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
+        # then split tokens into chunk for each data sample
+        # create masks to index the language, state, and actions separately
 
         for seq in self.sequences:
             states, actions, lang_tokens, lang_attn = (
@@ -464,6 +471,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
 
             all_states.append(states)
             all_actions.append(actions)
+            dones.append(seq.done)
 
             T, action_dim = actions.shape
             if self.hparams.get("discretize_actions", False):
@@ -495,7 +503,8 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
                 action_mask_[T : 2 * T] = 1
                 concat_sequence[-num_lang_tokens:] = lang_tokens
 
-            token_type_id = 0 * state_mask_ + action_mask_ + 2 * lang_token_mask_
+            # 0 - state / action and 1 for language
+            token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
             full_sequence.append(concat_sequence)
             token_type_ids.append(token_type_id)
             state_mask.append(state_mask_)
@@ -514,6 +523,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # lang_attn_mask = np.concatenate(lang_attn_mask)
         all_states = np.concatenate(all_states)
         all_actions = np.concatenate(all_actions)
+        dones = np.concatenate(dones)
 
         # chunk
         self.chunks = []
@@ -527,23 +537,25 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
             r = slice(i, i + chunk_size)
 
             # try to get an even number of states and actions
-            j = 1
+            j = 0
             while state_mask[r].sum() != action_mask[r].sum():
-                r = slice(i, i + chunk_size + j)
                 j += 1
+                r = slice(i, i + chunk_size + j)
 
-            i += chunk_size + j - 1
+            i += chunk_size + j
 
             state_indices = full_sequence[r][state_mask[r].astype(np.bool)]
             action_indices = full_sequence[r][action_mask[r].astype(np.bool)]
             states = np.take(all_states, state_indices.astype(np.bool), axis=0)
             actions = np.take(all_actions, action_indices.astype(np.bool), axis=0)
+            dones = np.take(dones, action_indices.astype(np.bool), axis=0)
 
             self.chunks.append(
                 {
                     "tokens": full_sequence[r],
                     "states": states,
                     "actions": actions,
+                    "dones": dones,
                     "state_mask": np.ones(len(states)),
                     "action_mask": np.ones(len(actions)),
                     "combined_state_mask": state_mask[r],
@@ -652,7 +664,7 @@ class KitchenDataModule(pl.LightningDataModule):
 
     def split_tr_and_val(self, data: List):
         num_examples = len(data)
-        num_train_ex = int(num_examples * self.hparams.split["train"])
+        num_train_ex = math.ceil(num_examples * self.hparams.split["train"])
         num_val_ex = num_examples - num_train_ex
         return num_train_ex, num_val_ex
 
@@ -708,67 +720,81 @@ class LanguageBehaviorDataModule(KitchenDataModule):
     """
 
     def setup(self, stage: Optional[str] = None):
-        l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
-        self.lang_dataset = instantiate(l_cfg, _recursive_=False)
+        if "language" in self.hparams.modalities:
+            l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
+            self.lang_dataset = instantiate(l_cfg, _recursive_=False)
 
-        b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
-        self.behavior_dataset = instantiate(
-            b_cfg, dataset=self.dataset, _recursive_=False
-        )
+        if "paired" in self.hparams.modalities:
+            p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])
+            self.paired_dataset = instantiate(
+                p_cfg, dataset=self.dataset, _recursive_=False
+            )
 
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
-            num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
-            self.behavior_train, self.behavior_val = random_split(
-                self.behavior_dataset, [num_tr, num_val]
-            )
-            num_tr, num_val = self.split_tr_and_val(self.lang_dataset)
-            self.lang_train, self.lang_val = random_split(
-                self.lang_dataset, [num_tr, num_val]
-            )
+            if "language" in self.hparams.modalities:
+                num_tr, num_val = self.split_tr_and_val(self.lang_dataset)
+                self.lang_train, self.lang_val = random_split(
+                    self.lang_dataset, [num_tr, num_val]
+                )
+
+            if "paired" in self.hparams.modalities:
+                num_tr, num_val = self.split_tr_and_val(self.paired_dataset)
+                self.paired_train, self.paired_val = random_split(
+                    self.paired_dataset, [num_tr, num_val]
+                )
 
     def train_dataloader(self):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])
 
-        lang_dl = instantiate(
-            cfg,
-            dataset=self.lang_train,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-        )
-        paired_dl = instantiate(
-            cfg,
-            dataset=self.behavior_train,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            batch_sampler=self.behavior_dataset.get_sampler(
-                self.behavior_train.indices
-            ),
-            collate_fn=self.behavior_dataset.collate_fn,
-        )
+        loaders = {}
+        if "language" in self.hparams.modalities:
+            lang_dl = instantiate(
+                cfg,
+                dataset=self.lang_train,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            )
+            loaders["language"] = lang_dl
+        if "paired" in self.hparams.modalities:
+            paired_dl = instantiate(
+                cfg,
+                dataset=self.paired_train,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+                batch_sampler=self.paired_dataset.get_sampler(
+                    self.paired_train.indices
+                ),
+                collate_fn=self.paired_dataset.collate_fn,
+            )
+            loaders["paired"] = paired_dl
 
-        loaders = {"language": lang_dl, "paired": paired_dl}
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader
 
     def val_dataloader(self):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])
+        # cfg['n_repeat'] = 1
 
-        lang_dl = instantiate(
-            cfg,
-            dataset=self.lang_val,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-        )
-        paired_dl = instantiate(
-            cfg,
-            dataset=self.behavior_val,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            batch_sampler=self.behavior_dataset.get_sampler(self.behavior_val.indices),
-            collate_fn=self.behavior_dataset.collate_fn,
-        )
+        loaders = {}
+        if "language" in self.hparams.modalities:
+            lang_dl = instantiate(
+                cfg,
+                dataset=self.lang_val,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            )
+            loaders["language"] = lang_dl
+        if "paired" in self.hparams.modalities:
+            paired_dl = instantiate(
+                cfg,
+                dataset=self.paired_val,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+                batch_sampler=self.paired_dataset.get_sampler(self.paired_val.indices),
+                collate_fn=self.paired_dataset.collate_fn,
+            )
+            loaders["paired"] = paired_dl
 
-        loaders = {"language": lang_dl, "paired": paired_dl}
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader

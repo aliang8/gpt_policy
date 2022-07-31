@@ -31,9 +31,9 @@ class LanguageDataset(BaseDataset):
         text = " ".join(sentences)
 
         self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
-        tokens = self.tokenizer(text, padding="longest")
+        tokens = self.tokenizer(text, padding="longest", return_tensors="np")
 
-        input_ids, attention_mask = tokens["input_ids"], tokens["attention_mask"]
+        input_ids, attention_mask = tokens["input_ids"][0], tokens["attention_mask"][0]
 
         # split up tokens into chunks
         # this is useful when the text is too long for the model

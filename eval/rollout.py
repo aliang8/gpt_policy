@@ -44,27 +44,12 @@ class Rollout:
     def _postprocess_obs(self, obs: np.ndarray):
         return obs
 
-    def get_action(self, states, actions):
-        with torch.no_grad():
-            if self.config.prompt:
-                action_pred = self._agent.get_language_conditioned_action(
-                    states=states,
-                    actions=actions,
-                    lang_token_ids=self.prompt.input_ids,
-                    lang_attn_masks=self.prompt.attention_mask,
-                )
-            else:
-                action_pred = self._agent.get_action(
-                    states=states,
-                    actions=actions,
-                )
-        return action_pred
-
     def rollout_multi_episode(self):
         episodes = []
         avg_num_completed_tasks = 0
         for i in tqdm.tqdm(range(self.config.num_samples)):
-            episode = self.rollout_single_episode()
+            with torch.no_grad():
+                episode = self.rollout_single_episode()
             completed = episode.info[-1]["completed_tasks"]
             # print(f"rollout {i}: completed_tasks: {completed}")
             avg_num_completed_tasks += len(completed)
@@ -97,12 +82,30 @@ class Rollout:
             (0, self._agent.action_dim), device=self.device, dtype=torch.float32
         )
 
+        # get initial prompt / skill
+        # prompt, lang_token_ids, token_type_ids = self._agent.get_prompt()
+        # print(f"Prompt: {prompt}")
+        lang_token_ids, token_type_ids = None, None
+
         while not done and self._episode_step < self.config.max_episode_len:
             actions = torch.cat(
                 [actions, torch.zeros((1, action_dim), device=device)], dim=0
             )
 
-            action = self.get_action(states, actions)
+            (
+                action,
+                lang_token_ids,
+                token_type_ids,
+                progress_pred,
+            ) = self._agent.get_action(states, actions, lang_token_ids, token_type_ids)
+
+            # time to start a new skill?
+            print(progress_pred[-1])
+            if progress_pred[-1].item() > 0.9:
+                import ipdb
+
+                ipdb.set_trace()
+
             actions[-1] = action
             action = ten2ar(action.squeeze())
 

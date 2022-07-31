@@ -12,3 +12,5 @@ init_args:
     output_gaussian: False
     discretize_actions: False
     num_bins: 256
+    train_paired_lang: False
+    pred_progress: True

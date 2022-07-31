@@ -1,5 +1,5 @@
 # Train
-CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
+CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  trainer.py \
     --config configs/base_train.yaml
 
 # Evaluate

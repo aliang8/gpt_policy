@@ -1,4 +1,4 @@
-class_path: data.kitchen.KitchenDataModule
+class_path: data.kitchen.LanguageBehaviorDataModule
 init_args:
   data_conf: 
     env_name: kitchen-mixed-v0
@@ -9,6 +9,9 @@ init_args:
     data_dir: /data/anthony/kitchen/single_ann
     state_dim: 60
     action_dim: 9
+    modalities:
+      - paired
+      - language
 
     dataset_cls: # config for the dataset
       _target_: data.kitchen.SingleSequenceKitchenDataset
@@ -25,7 +28,7 @@ init_args:
         prepend_lang: True
         chunk_size: 512
       
-    behavior_dataset_cls: ${init_args.data_conf.dataset_cls}
+    paired_dataset_cls: ${init_args.data_conf.dataset_cls}
 
     language_dataset_cls: 
       _target_: data.language.LanguageDataset
@@ -40,6 +43,6 @@ init_args:
 
     dataloader_cls:
       _target_: data.sampler.RepeatedDataLoader
-      n_repeat: 5
+      n_repeat: 10
       num_workers: 4
-      batch_size: 4
+      batch_size: 8
