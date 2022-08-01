@@ -287,9 +287,8 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
             losses["lang_only_pred_loss"] = lang_only_pred_loss
         if "behavior" in batch:
             behavior_input = batch["behavior"]
-            action_preds, lang_token_logits, aux_pred = self.forward_state_action_lang(
-                **behavior_input
-            )
+
+            action_preds, _, aux_pred = self.forward_state_action_lang(**behavior_input)
             action_pred_loss = self._compute_action_pred_loss(
                 action_preds=action_preds,
                 target_actions=behavior_input["actions"],

@@ -5,6 +5,7 @@ import os
 import numpy as np
 import torch
 import tqdm
+from collections import Counter
 from omegaconf import DictConfig
 from envs.base import BaseEnvironment
 from utils.pytorch_utils import ten2ar
@@ -34,6 +35,8 @@ class Rollout:
                 f"{LANG_BOS_TOKEN} {self.config.prompt} {LANG_EOS_TOKEN}",
                 return_tensors="pt",
             )
+        else:
+            self.prompt = None
 
     def reset(self):
         self._episode_step, self._episode_reward = 0, 0.0
@@ -46,14 +49,12 @@ class Rollout:
 
     def rollout_multi_episode(self):
         episodes = []
-        avg_num_completed_tasks = 0
+        tasks_completed = Counter()
         for i in tqdm.tqdm(range(self.config.num_samples)):
             with torch.no_grad():
                 episode = self.rollout_single_episode()
             completed = episode.info[-1]["completed_tasks"]
-            print(f"rollout {i}: completed_tasks: {completed}")
-            avg_num_completed_tasks += len(completed)
-
+            tasks_completed.update(completed)
             if self.config.save_video:
                 filename = os.path.join(
                     self.save_dir, f"{self.config.video_prefix}_video_{i}.mp4"
@@ -61,9 +62,7 @@ class Rollout:
                 save_episode_as_video(
                     episode, filename=filename, caption=self.config.prompt
                 )
-        avg_num_completed_tasks /= self.config.num_samples
-        print(avg_num_completed_tasks)
-        return episodes
+        return episodes, tasks_completed
 
     def rollout_single_episode(self):
         episode, done = [], False
@@ -75,17 +74,23 @@ class Rollout:
         # keep track of the entire history to feed into GPT
         states = (
             torch.from_numpy(obs)
-            .reshape(1, self._agent.state_dim)
-            .to(device=self.device, dtype=torch.float32)
+            .reshape(1, state_dim)
+            .to(device=device, dtype=torch.float32)
         )
-        actions = torch.zeros(
-            (0, self._agent.action_dim), device=self.device, dtype=torch.float32
-        )
+        actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
 
-        # get initial prompt / skill
-        # prompt, lang_token_ids, token_type_ids = self._agent.get_prompt()
-        # print(f"Prompt: {prompt}")
-        lang_token_ids, token_type_ids = None, None
+        prompt, lang_token_ids, token_type_ids = "", None, None
+
+        if hasattr(self, "prompt") and self.prompt:
+            prompt, lang_token_ids = self.config.prompt, self.prompt["input_ids"]
+            lang_token_ids = lang_token_ids.to(device)
+            token_type_ids = torch.ones((1, lang_token_ids.shape[-1])).to(device)
+        elif self.config.self_prompting:
+            # get initial prompt / skill
+            prompt, lang_token_ids, token_type_ids = self._agent.get_prompt()
+
+        if prompt:
+            print(f"Prompt: {prompt}")
 
         while not done and self._episode_step < self.config.max_episode_len:
             actions = torch.cat(

@@ -13,12 +13,22 @@ from pytorch_lightning.utilities.cli import LightningCLI
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--eval-config-file", type=str, default="")
+    parser.add_argument("--eval-config-files", type=str, nargs="+", default="")
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
-    # load config
-    eval_cfg = OmegaConf.load(args.eval_config_file)
+    # combine multiple configs together
+    configs = []
+    for conf_f in args.eval_config_files:
+        cfg = OmegaConf.load(conf_f)
+        configs.append(cfg)
+    cli_cfg = OmegaConf.from_cli()
+    configs.append(cli_cfg)
+
+    eval_cfg = OmegaConf.merge(*configs)
+
+    print("Eval config:")
+    print(OmegaConf.to_yaml(eval_cfg))
 
     save_dir = eval_cfg.sampler.config.save_dir
     exp_name = eval_cfg.sampler.config.exp_name

@@ -1,12 +1,18 @@
 # Train
-CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  trainer.py \
-    --config configs/base_train.yaml
+CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
+    --config configs/base/base_train.yaml
 
 # Evaluate
-CUDA_VISIBLE_DEVICES=1 python3 -m ipdb -c continue  evaluate.py \
-    --trainer-config-file configs/trainer.yaml \
-    --eval-config-file configs/base_eval.yaml
+# multi-gpu eval
+# no spaces between list items
+python3 -m ipdb -c continue multi_eval.py \
+    exp_name=[transformerBC_paired_only,transformerBC_paired_language_pred_progress] \
+    sampler.config.num_samples=2 \
+    eval_config_files=[configs/base/base_eval.yaml]
 
 
-CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  evaluate.py \
-    --eval-config-file configs/eval_rollout_rewards.yaml
+python3 -m ipdb -c continue multi_eval.py \
+    exp_name=[transformerBC_paired_language_pred_progress] \
+    sampler.config.num_samples=20 \
+    eval_config_files=[configs/base/base_eval.yaml] \
+    debug=True

@@ -788,6 +788,10 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 dataset=self.paired_train,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+                batch_sampler=self.paired_dataset.get_sampler(
+                    self.paired_train.indices
+                ),
+                collate_fn=self.paired_dataset.collate_fn,
             )
             loaders["paired"] = paired_dl
 
@@ -836,6 +840,8 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 dataset=self.paired_val,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+                batch_sampler=self.paired_dataset.get_sampler(self.paired_val.indices),
+                collate_fn=self.paired_dataset.collate_fn,
             )
             loaders["paired"] = paired_dl
 
