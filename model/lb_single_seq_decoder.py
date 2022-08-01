@@ -95,9 +95,10 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         self.lang_loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
         # predicts a float value between 0 and 1
-        self.predict_progress = nn.Sequential(
-            nn.Linear(self.embed_dim, 1), nn.Sigmoid()
-        )
+        if self.hparams.get("pred_progress", False):
+            self.predict_progress = nn.Sequential(
+                nn.Linear(self.embed_dim, 1), nn.Sigmoid()
+            )
         self.progress_pred_loss_fn = torch.nn.MSELoss()
 
     def forward_lang(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
@@ -177,6 +178,8 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         # reshape x so the second dimension corresponds to states (0), actions (1)
         model_out = transformer_outputs["last_hidden_state"]
 
+        aux_pred = None
+
         if states is not None:
             state_out = model_out[combined_state_mask]
 
@@ -192,10 +195,10 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
             # ================ DONE PREDICTION ================
             # use previous states + actions to predict skill progress
-            aux_pred = self.predict_progress(state_out)
+            if self.hparams.get("pred_progress", False):
+                aux_pred = self.predict_progress(state_out)
         else:
             action_preds_full = None
-            aux_pred = None
 
         if lang_token_mask.sum() != 0:
             # ================ LANGUAGE PREDICTION ================
@@ -282,6 +285,17 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
                 lang_token_mask=lang_input["attention_mask"].bool(),
             )
             losses["lang_only_pred_loss"] = lang_only_pred_loss
+        if "behavior" in batch:
+            behavior_input = batch["behavior"]
+            action_preds, lang_token_logits, aux_pred = self.forward_state_action_lang(
+                **behavior_input
+            )
+            action_pred_loss = self._compute_action_pred_loss(
+                action_preds=action_preds,
+                target_actions=behavior_input["actions"],
+                action_mask=behavior_input["action_mask"].bool(),
+            )
+            losses["behavior_only_action_pred_loss"] = action_pred_loss
 
         if "paired" in batch:
             paired_input = batch["paired"]

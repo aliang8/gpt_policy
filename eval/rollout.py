@@ -51,7 +51,7 @@ class Rollout:
             with torch.no_grad():
                 episode = self.rollout_single_episode()
             completed = episode.info[-1]["completed_tasks"]
-            # print(f"rollout {i}: completed_tasks: {completed}")
+            print(f"rollout {i}: completed_tasks: {completed}")
             avg_num_completed_tasks += len(completed)
 
             if self.config.save_video:
@@ -100,11 +100,11 @@ class Rollout:
             ) = self._agent.get_action(states, actions, lang_token_ids, token_type_ids)
 
             # time to start a new skill?
-            print(progress_pred[-1])
-            if progress_pred[-1].item() > 0.9:
-                import ipdb
+            # print(progress_pred[-1])
+            # if progress_pred[-1].item() > 0.9:
+            #     import ipdb
 
-                ipdb.set_trace()
+            #     ipdb.set_trace()
 
             actions[-1] = action
             action = ten2ar(action.squeeze())

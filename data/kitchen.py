@@ -104,8 +104,6 @@ class KitchenDataset(BaseDataset):
         start = 0
         seqs = []
         for end_idx in seq_end_idxs:
-            if end_idx + 1 - start < self.hparams.subseq_len:
-                continue  # skip too short demos
             seqs.append(
                 AttrDict(
                     states=self.dataset["observations"][start : end_idx + 1],
@@ -437,7 +435,6 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         if self.hparams.load_lang:
             self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
             self.skill_to_token_map = self._get_lang_tokens()
-
             self._add_language_annotations()
 
         # combine everything into a single sequence
@@ -449,7 +446,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # lang_attn_mask = []
         all_states = []
         all_actions = []
-        dones = []
+        all_dones = []
 
         start = 0
 
@@ -459,19 +456,21 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # create masks to index the language, state, and actions separately
 
         for seq in self.sequences:
-            states, actions, lang_tokens, lang_attn = (
-                seq["states"],
-                seq["actions"],
-                seq["lang_token_ids"],
-                seq["lang_attention_mask"],
-            )
+            states, actions = seq["states"], seq["actions"]
 
             # ignore pads
-            num_lang_tokens = sum(lang_attn)
+            if self.hparams.load_lang:
+                lang_tokens, lang_attn = (
+                    seq["lang_token_ids"],
+                    seq["lang_attention_mask"],
+                )
+                num_lang_tokens = sum(lang_attn)
+            else:
+                num_lang_tokens = 0
 
             all_states.append(states)
             all_actions.append(actions)
-            dones.append(seq.done)
+            all_dones.append(seq.done)
 
             T, action_dim = actions.shape
             if self.hparams.get("discretize_actions", False):
@@ -485,23 +484,26 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
             action_mask_ = np.zeros((total_num_tokens))
             state_mask_ = np.zeros((total_num_tokens))
 
-            if self.hparams.prepend_lang:  # add language before state/action
-                lang_r = slice(0, num_lang_tokens)
-                state_r = slice(num_lang_tokens, total_num_tokens, 2)
-                action_r = slice(num_lang_tokens + 1, total_num_tokens, 2)
+            state_r = slice(num_lang_tokens, total_num_tokens, 2)
+            action_r = slice(num_lang_tokens + 1, total_num_tokens, 2)
 
-                lang_token_mask_[lang_r] = 1
-                # lang_attn_mask_[lang_r] = lang_attn
-                state_mask_[state_r] = 1
-                action_mask_[action_r] = 1
-                concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
-                concat_sequence[state_r] = np.arange(start, start + T)
-                concat_sequence[action_r] = np.arange(start, start + T)
-            else:
-                lang_token_mask_[-num_lang_tokens:] = 1
-                state_mask_[:T] = 1
-                action_mask_[T : 2 * T] = 1
-                concat_sequence[-num_lang_tokens:] = lang_tokens
+            state_mask_[state_r] = 1
+            action_mask_[action_r] = 1
+            concat_sequence[state_r] = np.arange(start, start + T)
+            concat_sequence[action_r] = np.arange(start, start + T)
+
+            if self.hparams.load_lang:
+                if self.hparams.prepend_lang:  # add language before state/action
+                    lang_r = slice(0, num_lang_tokens)
+                    lang_token_mask_[lang_r] = 1
+                    # lang_attn_mask_[lang_r] = lang_attn
+                    concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
+                else:
+                    # TODO: fix
+                    lang_token_mask_[-num_lang_tokens:] = 1
+                    state_mask_[:T] = 1
+                    action_mask_[T : 2 * T] = 1
+                    concat_sequence[-num_lang_tokens:] = lang_tokens
 
             # 0 - state / action and 1 for language
             token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
@@ -523,13 +525,14 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # lang_attn_mask = np.concatenate(lang_attn_mask)
         all_states = np.concatenate(all_states)
         all_actions = np.concatenate(all_actions)
-        dones = np.concatenate(dones)
+        all_dones = np.concatenate(all_dones)
 
         # chunk
         self.chunks = []
         chunk_size = self.hparams.chunk_size
 
         i = 0
+
         while i < len(full_sequence):
             if i + chunk_size > len(full_sequence):  # need to drop the last chunk
                 break
@@ -546,9 +549,10 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
 
             state_indices = full_sequence[r][state_mask[r].astype(np.bool)]
             action_indices = full_sequence[r][action_mask[r].astype(np.bool)]
-            states = np.take(all_states, state_indices.astype(np.bool), axis=0)
-            actions = np.take(all_actions, action_indices.astype(np.bool), axis=0)
-            dones = np.take(dones, action_indices.astype(np.bool), axis=0)
+
+            states = np.take(all_states, state_indices.astype(np.int), axis=0)
+            actions = np.take(all_actions, action_indices.astype(np.int), axis=0)
+            dones = np.take(all_dones, action_indices.astype(np.int), axis=0)
 
             self.chunks.append(
                 {
@@ -730,6 +734,12 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 p_cfg, dataset=self.dataset, _recursive_=False
             )
 
+        if "behavior" in self.hparams.modalities:
+            b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
+            self.behavior_dataset = instantiate(
+                b_cfg, dataset=self.dataset, _recursive_=False
+            )
+
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
             if "language" in self.hparams.modalities:
@@ -744,6 +754,12 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                     self.paired_dataset, [num_tr, num_val]
                 )
 
+            if "behavior" in self.hparams.modalities:
+                num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
+                self.behavior_train, self.behavior_val = random_split(
+                    self.behavior_dataset, [num_tr, num_val]
+                )
+
     def train_dataloader(self):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])
 
@@ -756,18 +772,37 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
             )
             loaders["language"] = lang_dl
+
+        if "behavior" in self.hparams.modalities:
+            behavior_dl = instantiate(
+                cfg,
+                dataset=self.behavior_train,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            )
+            loaders["behavior"] = behavior_dl
+
         if "paired" in self.hparams.modalities:
             paired_dl = instantiate(
                 cfg,
                 dataset=self.paired_train,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(
-                    self.paired_train.indices
-                ),
-                collate_fn=self.paired_dataset.collate_fn,
             )
             loaders["paired"] = paired_dl
+
+        # if "paired" in self.hparams.modalities:
+        #     paired_dl = instantiate(
+        #         cfg,
+        #         dataset=self.paired_train,
+        #         pin_memory=True,
+        #         worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+        #         batch_sampler=self.paired_dataset.get_sampler(
+        #             self.paired_train.indices
+        #         ),
+        #         collate_fn=self.paired_dataset.collate_fn,
+        #     )
+        #     loaders["paired"] = paired_dl
 
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader
@@ -785,14 +820,22 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
             )
             loaders["language"] = lang_dl
+
+        if "behavior" in self.hparams.modalities:
+            behavior_dl = instantiate(
+                cfg,
+                dataset=self.behavior_val,
+                pin_memory=True,
+                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
+            )
+            loaders["behavior"] = behavior_dl
+
         if "paired" in self.hparams.modalities:
             paired_dl = instantiate(
                 cfg,
                 dataset=self.paired_val,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(self.paired_val.indices),
-                collate_fn=self.paired_dataset.collate_fn,
             )
             loaders["paired"] = paired_dl
 
