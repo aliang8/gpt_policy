@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 from data.dataset import BaseDataset
+from torch.utils.data import ConcatDataset
 
 
 class KitchenDataset(BaseDataset):
@@ -731,8 +732,14 @@ class LanguageBehaviorDataModule(KitchenDataModule):
 
     def setup(self, stage: Optional[str] = None):
         if "language" in self.hparams.modalities:
-            l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
-            self.lang_dataset = instantiate(l_cfg, _recursive_=False)
+            # merge multiple language datasets
+            l_datasets = []
+            for dataset in self.hparams.language_datasets:
+                self.hparams["language_dataset_cls"]["_target_"] = dataset
+                l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
+                l_datasets.append(instantiate(l_cfg, _recursive_=False))
+
+            self.lang_dataset = ConcatDataset(l_datasets)
 
         if "paired" in self.hparams.modalities:
             p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])

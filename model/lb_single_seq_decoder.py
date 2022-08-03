@@ -198,9 +198,9 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
                 )
 
             # add position id to word token embedding
-            # position_ids = position_ids.int().to(self.device)
-            # position_embeds = self.model.wpe(position_ids)
-            # lang_embeddings = lang_embeddings + position_embeds
+            position_ids = position_ids.int().to(self.device)
+            position_embeds = self.model.wpe(position_ids)
+            lang_embeddings = lang_embeddings + position_embeds
             state_action_lang[lang_token_mask] = lang_embeddings
 
         state_action_lang_embs = self.embed_ln(state_action_lang)
