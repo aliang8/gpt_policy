@@ -12,12 +12,12 @@ from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead, BertOnlyNSPHead
 
 
-import torch
 import more_itertools as mit
 import torch.nn as nn
 from transformers import AutoTokenizer
 import pytorch_lightning as pl
 from transformers import GPT2Model
+from model.trajectory_gpt2 import TrajectoryGPT2
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead, BertOnlyNSPHead
@@ -40,12 +40,26 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         self.save_hyperparameters(model_conf)
         self.decoder_config = GPT2Config.from_pretrained("gpt2")
 
-        gpt_decoder = GPT2Model.from_pretrained("gpt2")
+        # initialize without pretrained weights
+        trajectory_gpt2 = TrajectoryGPT2(self.decoder_config)
+        pretrained_gpt = GPT2Model.from_pretrained("gpt2")
 
-        self.model = gpt_decoder
+        # load the pretrained word embedding and positional embedding from pretrained gpt model
+        self.embed_dim = self.hparams.hidden_dim
+        self.wte = nn.Embedding(self.decoder_config.vocab_size, self.embed_dim)
+        self.wpe = nn.Embedding(
+            self.decoder_config.max_position_embeddings, self.embed_dim
+        )
 
-        # self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
-        self.tokenizer = get_tokenizer("gpt2")
+        if self.training:
+            self.wte.load_state_dict(pretrained_gpt.wte.state_dict())
+            self.wpe.load_state_dict(pretrained_gpt.wpe.state_dict())
+
+        self.model = trajectory_gpt2
+        self.model.wte = self.wte
+        self.model.wpe = self.wpe
+
+        self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
 
         # because we added special tokens
         self.model.resize_token_embeddings(len(self.tokenizer))
@@ -55,12 +69,12 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         self.output_gaussian = (
             "output_gaussian" in self.hparams and self.hparams.output_gaussian
         )
-        self.embed_dim = self.hparams.hidden_dim
 
         # embedding heads each modality before inputting to transformer
         self.embed_state = nn.Linear(self.state_dim, self.embed_dim)
         self.embed_action = nn.Linear(self.action_dim, self.embed_dim)
         self.embed_ln = nn.LayerNorm(self.embed_dim)
+        self.embed_timestep = nn.Embedding(self.hparams.max_ep_len, self.embed_dim)
 
         # output head for predicting action
         action_tanh = False
@@ -121,6 +135,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         self,
         tokens: torch.Tensor = None,
         states: torch.Tensor = None,
+        timesteps: torch.Tensor = None,
         actions: torch.Tensor = None,
         **kwargs,
     ):
@@ -152,17 +167,40 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
         # filter states and actions from pad
         if states is not None:
+
+            if len(states.shape) == 2:
+                states = states.reshape(1, -1, self.state_dim)
+                actions = actions.reshape(1, -1, self.action_dim)
+
             states = states[state_mask]
             actions = actions[action_mask]
+            timesteps = timesteps[state_mask]
 
             state_embeddings = self.embed_state(states)
             action_embeddings = self.embed_action(actions)
+            timestep_embeddings = self.embed_timestep(timesteps.int())
+
+            state_embeddings = state_embeddings + timestep_embeddings
+            action_embeddings = action_embeddings + timestep_embeddings
             state_action_lang[combined_state_mask] = state_embeddings
             state_action_lang[combined_action_mask] = action_embeddings
 
         if lang_token_mask.sum() != 0:
             lang_token_ids = tokens[lang_token_mask]
             lang_embeddings = self.model.wte(lang_token_ids.long())
+
+            # create position ids for language
+            seq_length_per_batch = lang_token_mask.sum(-1)
+            position_ids = torch.zeros(0)
+            for seq_length in seq_length_per_batch:
+                position_ids = torch.cat(
+                    [position_ids, torch.arange(seq_length)], dim=-1
+                )
+
+            # add position id to word token embedding
+            # position_ids = position_ids.int().to(self.device)
+            # position_embeds = self.model.wpe(position_ids)
+            # lang_embeddings = lang_embeddings + position_embeds
             state_action_lang[lang_token_mask] = lang_embeddings
 
         state_action_lang_embs = self.embed_ln(state_action_lang)
@@ -362,6 +400,10 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         token_type_ids: torch.Tensor = None,
         **kwargs,
     ):
+        if states is not None and len(states.shape) == 2:
+            states = states.reshape(1, -1, self.state_dim)
+            actions = actions.reshape(1, -1, self.action_dim)
+
         B = token_type_ids.shape[0]  # usually should be 1
         if states is not None:
             state_mask = torch.ones((B, states.shape[1])).to(self.device)
@@ -404,20 +446,27 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
         lang_token_ids: torch.Tensor = None,
+        token_type_ids: torch.Tensor = None,
         **kwargs,
     ):
         """
         Implements greedy decoding.
         """
-
         tokens = self.tokenize(LANG_BOS_TOKEN)
+        new_tokens = tokens.clone()
 
         # start with the BOS token
         curr_token = self.tokenizer.vocab[LANG_BOS_TOKEN]
 
-        while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
-            token_type_ids = torch.ones((1, tokens.shape[-1])).to(self.device)
+        if token_type_ids is None:
+            token_type_ids = torch.ones((1, 1)).to(self.device)
+        else:
+            token_type_ids = torch.cat(
+                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
+            )
+            tokens = torch.cat([lang_token_ids, tokens], dim=-1)
 
+        while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
             # build masks
             masks = self.build_masks(states, actions, tokens, token_type_ids)
             _, lang_token_logits, _ = self.forward_state_action_lang(
@@ -428,9 +477,11 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
             # add next token
             tokens = torch.cat([tokens, next_token], dim=-1)
+            new_tokens = torch.cat([new_tokens, next_token], dim=-1)
 
-        # one more for the last token
-        token_type_ids = torch.ones((1, tokens.shape[-1])).to(self.device)
+            token_type_ids = torch.cat(
+                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
+            )
 
         # decode
         prompt_str = self.tokenizer.decode(
@@ -438,12 +489,13 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         ).strip()
-        return prompt_str, tokens, token_type_ids
+        return prompt_str, new_tokens, tokens, token_type_ids
 
     def get_action(
         self,
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
+        timesteps: torch.Tensor = None,
         lang_token_ids: torch.Tensor = None,
         token_type_ids: torch.Tensor = None,
         **kwargs,
@@ -455,14 +507,16 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
             Tensor of size [T, state_dim]
         :param Tensor actions:
             Tensor of size [T, action_dim]
+        :param Tensor timesteps:
+            Tensor of size [T, ]
         :param Tensor lang_token_ids:
             Optional tensor of size [1, N]
         :param Tensor token_type_ids:
             tensor of size [1, 2*T+N], stores the token types of full sequence
         """
-        states = states.reshape(1, -1, self.state_dim)
-        actions = actions.reshape(1, -1, self.action_dim)
-        T = states.shape[1]
+        if len(states.shape) == 2:
+            states = states.reshape(1, -1, self.state_dim)
+            actions = actions.reshape(1, -1, self.action_dim)
 
         # add one for state and one for action
         sa_token_type_ids = torch.zeros((1, 2)).to(self.device)
@@ -482,6 +536,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         action_preds, _, aux_pred = self.forward_state_action_lang(
             states=states,
             actions=actions,
+            timesteps=timesteps,
             **masks,
         )
 

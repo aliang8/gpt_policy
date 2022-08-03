@@ -108,6 +108,7 @@ class KitchenDataset(BaseDataset):
                 AttrDict(
                     states=self.dataset["observations"][start : end_idx + 1],
                     actions=self.dataset["actions"][start : end_idx + 1],
+                    timesteps=np.arange(end_idx + 1 - start),
                 )
             )
             start = end_idx + 1
@@ -447,6 +448,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         all_states = []
         all_actions = []
         all_dones = []
+        all_timesteps = []
 
         start = 0
 
@@ -456,7 +458,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # create masks to index the language, state, and actions separately
 
         for seq in self.sequences:
-            states, actions = seq["states"], seq["actions"]
+            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
 
             # ignore pads
             if self.hparams.load_lang:
@@ -471,6 +473,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
             all_states.append(states)
             all_actions.append(actions)
             all_dones.append(seq.done)
+            all_timesteps.append(timesteps)
 
             T, action_dim = actions.shape
             if self.hparams.get("discretize_actions", False):
@@ -526,6 +529,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         all_states = np.concatenate(all_states)
         all_actions = np.concatenate(all_actions)
         all_dones = np.concatenate(all_dones)
+        all_timesteps = np.concatenate(all_timesteps)
 
         # chunk
         self.chunks = []
@@ -553,6 +557,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
             states = np.take(all_states, state_indices.astype(np.int), axis=0)
             actions = np.take(all_actions, action_indices.astype(np.int), axis=0)
             dones = np.take(all_dones, action_indices.astype(np.int), axis=0)
+            timesteps = np.take(all_timesteps, state_indices.astype(np.int), axis=0)
 
             self.chunks.append(
                 {
@@ -560,6 +565,7 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
                     "states": states,
                     "actions": actions,
                     "dones": dones,
+                    "timesteps": timesteps,
                     "state_mask": np.ones(len(states)),
                     "action_mask": np.ones(len(actions)),
                     "combined_state_mask": state_mask[r],
