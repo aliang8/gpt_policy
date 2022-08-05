@@ -65,6 +65,7 @@ class Rollout:
             episodes.append(episode)
             completed = episode.info[-1]["completed_tasks"]
             tasks_completed.update(completed)
+            print(tasks_completed)
 
             if self.config.save_video:
                 filename = os.path.join(

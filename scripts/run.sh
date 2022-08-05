@@ -4,7 +4,7 @@ CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
     data=configs/base/data.yaml \
     model=configs/base/decoder_model.yaml
 
-CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
+CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  trainer.py \
     trainer=[configs/base/trainer.yaml,configs/language_only/trainer.yaml] \
     data=[configs/base/data.yaml,configs/language_only/data.yaml] \
     model=configs/base/decoder_model.yaml
@@ -29,14 +29,13 @@ python3 -m ipdb -c continue multi_eval.py \
 
 # test language, make sure language-only prompting works
 python3 -m ipdb -c continue scripts/test_language_gen.py \
-    exp_name=[transformerBC_paired_language_pred_progress_plus_timestep_emb] \
+    exp_name=[pretrained_LM/] \
     sampler.config.num_samples=1 \
-    eval_config_files=[configs/base/base_eval.yaml]
+    generation.decoding=beam
+    eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml]
 
 # custom
-python3 -m ipdb -c continue multi_eval.py \
-    exp_name=[transformerBC_paired_language_pred_progress_plus_timestep_emb] \
-    sampler.config.num_samples=50 \
-    env.config.name=kitchen-mlsh-v0 \
-    sampler.config.self_prompting=True \
-    eval_config_files=[configs/base/base_eval.yaml] \
+CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/language_only/trainer.yaml] \
+    data=[configs/base/data.yaml,configs/language_only/data.yaml] \
+    model=configs/base/decoder_model.yaml

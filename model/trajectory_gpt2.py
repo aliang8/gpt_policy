@@ -1,7 +1,10 @@
 # same as huggingface gpt2, but we don't use their positional encoding
 
+from dataclasses import dataclass
 import torch
-from transformers import GPT2Model
+import torch.nn as nn
+from transformers import GPT2Model, GPT2LMHeadModel
+from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from typing import Optional, Tuple, Union
 from transformers.modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
@@ -14,7 +17,78 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class TrajectoryGPT2(GPT2Model):
+@dataclass
+class CausalLMOutputWithCrossAttentionsAndLastHiddenState(
+    CausalLMOutputWithCrossAttentions
+):
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    last_hidden_state: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+
+
+class TrajectoryGPT2(GPT2LMHeadModel):
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.model_parallel = False
+        self.device_map = None
+        self.gradient_checkpointing = False
+
+        # self.wte = self.transformer.wte
+        # self.wpe = self.transformer.wpe
+
+        # self.drop = self.transformer.drop
+        # self.h = self.transformer.h
+        # self.ln_f = self.transformer.ln_f
+
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def prepare_inputs_for_generation(self, input_ids, past=None, **kwargs):
+        token_type_ids = kwargs.get("token_type_ids", None)
+        # only last token for inputs_ids if past is defined in kwargs
+        if past:
+            input_ids = input_ids[:, -1].unsqueeze(-1)
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids[:, -1].unsqueeze(-1)
+
+        attention_mask = kwargs.get("attention_mask", None)
+        position_ids = kwargs.get("position_ids", None)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
+        else:
+            position_ids = None
+
+        # feed input embed instead of input id for language generation
+        lang_embeddings = self.transformer.wte(input_ids.long())
+        position_embeds = self.transformer.wpe(position_ids)
+        inputs_embeds = lang_embeddings + position_embeds
+        inputs_embeds = self.embed_ln(inputs_embeds)
+
+        return {
+            # "input_ids": input_ids,
+            "inputs_embeds": inputs_embeds,
+            "past_key_values": past,
+            "use_cache": kwargs.get("use_cache"),
+            # "position_ids": position_ids,
+            "attention_mask": attention_mask,
+            "token_type_ids": token_type_ids,
+        }
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -30,6 +104,7 @@ class TrajectoryGPT2(GPT2Model):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        lang_only_input: Optional[bool] = True,
     ):
         output_attentions = (
             output_attentions
@@ -69,7 +144,7 @@ class TrajectoryGPT2(GPT2Model):
 
         if past_key_values is None:
             past_length = 0
-            past_key_values = tuple([None] * len(self.h))
+            past_key_values = tuple([None] * len(self.transformer.h))
         else:
             past_length = past_key_values[0][0].size(-2)
         if position_ids is None:
@@ -123,15 +198,19 @@ class TrajectoryGPT2(GPT2Model):
         head_mask = self.get_head_mask(head_mask, self.config.n_layer)
 
         if inputs_embeds is None:
-            inputs_embeds = self.wte(input_ids)
-        # position_embeds = self.wpe(position_ids)
-        hidden_states = inputs_embeds  # + position_embeds
+            inputs_embeds = self.transformer.wte(input_ids)
+
+        if lang_only_input:
+            position_embeds = self.transformer.wpe(position_ids)
+            hidden_states = inputs_embeds + position_embeds
+        else:
+            hidden_states = inputs_embeds
 
         if token_type_ids is not None:
-            token_type_embeds = self.wte(token_type_ids)
+            token_type_embeds = self.transformer.wte(token_type_ids)
             hidden_states = hidden_states + token_type_embeds
 
-        hidden_states = self.drop(hidden_states)
+        hidden_states = self.transformer.drop(hidden_states)
 
         output_shape = input_shape + (hidden_states.size(-1),)
 
@@ -141,7 +220,9 @@ class TrajectoryGPT2(GPT2Model):
             () if output_attentions and self.config.add_cross_attention else None
         )
         all_hidden_states = () if output_hidden_states else None
-        for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+        for i, (block, layer_past) in enumerate(
+            zip(self.transformer.h, past_key_values)
+        ):
 
             # Model parallel
             if self.model_parallel:
@@ -214,7 +295,7 @@ class TrajectoryGPT2(GPT2Model):
                     if i == v[-1] and "cuda:" + str(k) != self.last_device:
                         hidden_states = hidden_states.to("cuda:" + str(k + 1))
 
-        hidden_states = self.ln_f(hidden_states)
+        hidden_states = self.transformer.ln_f(hidden_states)
 
         hidden_states = hidden_states.view(output_shape)
         # Add last hidden state
@@ -234,7 +315,13 @@ class TrajectoryGPT2(GPT2Model):
                 if v is not None
             )
 
-        return BaseModelOutputWithPastAndCrossAttentions(
+        if lang_only_input:
+            lm_logits = self.lm_head(hidden_states)
+        else:
+            lm_logits = None
+
+        return CausalLMOutputWithCrossAttentionsAndLastHiddenState(
+            logits=lm_logits,  # need this for generating language output
             last_hidden_state=hidden_states,
             past_key_values=presents,
             hidden_states=all_hidden_states,

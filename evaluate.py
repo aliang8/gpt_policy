@@ -48,7 +48,7 @@ def load_model_and_env_from_cfg(cfg):
     assert os.path.exists(ckpt_path)
 
     model = LB_SingleSeq_Decoder.load_from_checkpoint(
-        checkpoint_path=ckpt_path, training=False
+        checkpoint_path=ckpt_path, training=False, strict=False
     )
     model = model.cuda()
     model.eval()

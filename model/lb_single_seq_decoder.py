@@ -38,31 +38,41 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
         # saves parameters into hparams attribute
         self.save_hyperparameters(model_conf)
-        self.decoder_config = GPT2Config.from_pretrained("gpt2")
-
-        # initialize without pretrained weights
-        trajectory_gpt2 = TrajectoryGPT2(self.decoder_config)
-        pretrained_gpt = GPT2Model.from_pretrained("gpt2")
-
-        # load the pretrained word embedding and positional embedding from pretrained gpt model
+        self.decoder_config = GPT2Config.from_pretrained(self.hparams.decoder_model_cls)
         self.embed_dim = self.hparams.hidden_dim
-        self.wte = nn.Embedding(self.decoder_config.vocab_size, self.embed_dim)
-        self.wpe = nn.Embedding(
-            self.decoder_config.max_position_embeddings, self.embed_dim
-        )
 
-        if self.training:
-            self.wte.load_state_dict(pretrained_gpt.wte.state_dict())
-            self.wpe.load_state_dict(pretrained_gpt.wpe.state_dict())
+        if self.hparams.get("load_pretrained_lm_weights", False):
+            # load from pretrained GPT2
+            trajectory_gpt2 = TrajectoryGPT2.from_pretrained(
+                self.hparams.decoder_model_cls
+            )
+        else:
+            trajectory_gpt2 = TrajectoryGPT2(self.decoder_config)
+            pretrained_gpt = GPT2Model.from_pretrained(self.hparams.decoder_model_cls)
+
+            # load the pretrained word embedding and positional embedding from pretrained gpt model
+            self.wte = nn.Embedding(self.decoder_config.vocab_size, self.embed_dim)
+            self.wpe = nn.Embedding(
+                self.decoder_config.max_position_embeddings, self.embed_dim
+            )
+
+            if self.training:
+                self.wte.load_state_dict(pretrained_gpt.wte.state_dict())
+                self.wpe.load_state_dict(pretrained_gpt.wpe.state_dict())
 
         self.model = trajectory_gpt2
-        self.model.wte = self.wte
-        self.model.wpe = self.wpe
+
+        if not self.hparams.get("load_pretrained_lm_weights", False):
+            self.model.transformer.wte = self.wte
+            self.model.transformer.wpe = self.wpe
 
         self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
 
         # because we added special tokens
-        self.model.resize_token_embeddings(len(self.tokenizer))
+        # self.wte = self.model.wte = self.model.resize_token_embeddings(
+        #     len(self.tokenizer)
+        # )
+        self.model.transformer.wte = self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.state_dim = self.hparams.state_dim
         self.action_dim = self.hparams.action_dim
@@ -74,6 +84,8 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         self.embed_state = nn.Linear(self.state_dim, self.embed_dim)
         self.embed_action = nn.Linear(self.action_dim, self.embed_dim)
         self.embed_ln = nn.LayerNorm(self.embed_dim)
+
+        self.model.embed_ln = self.embed_ln
         self.embed_timestep = nn.Embedding(self.hparams.max_ep_len, self.embed_dim)
 
         # output head for predicting action
@@ -95,11 +107,6 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
                 )
             )
 
-        # output head for next token prediction
-        self.lm_head = nn.Linear(
-            self.decoder_config.n_embd, len(self.tokenizer), bias=False
-        )
-
         # loss functions
         if self.output_gaussian:
             self.action_loss_fn = torch.nn.GaussianNLLLoss(reduction="none")
@@ -114,22 +121,6 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
                 nn.Linear(self.embed_dim, 1), nn.Sigmoid()
             )
         self.progress_pred_loss_fn = torch.nn.MSELoss()
-
-    def forward_lang(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        B = input_ids.shape[0]
-        lang_embs = self.model.wte(input_ids.long())
-        lang_mask = attention_mask.clone()
-        lang_token_type_id = attention_mask.clone()  # language has tt_id 1
-
-        model_out = self.model(
-            inputs_embeds=lang_embs,
-            attention_mask=lang_mask.bool(),
-            token_type_ids=lang_token_type_id.int(),
-        )
-
-        lang_out = model_out["last_hidden_state"]
-        lang_token_logits = self.lm_head(lang_out)
-        return lang_token_logits
 
     def forward_state_action_lang(
         self,
@@ -167,7 +158,6 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
         # filter states and actions from pad
         if states is not None:
-
             if len(states.shape) == 2:
                 states = states.reshape(1, -1, self.state_dim)
                 actions = actions.reshape(1, -1, self.action_dim)
@@ -187,7 +177,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
         if lang_token_mask.sum() != 0:
             lang_token_ids = tokens[lang_token_mask]
-            lang_embeddings = self.model.wte(lang_token_ids.long())
+            lang_embeddings = self.model.transformer.wte(lang_token_ids.long())
 
             # create position ids for language
             seq_length_per_batch = lang_token_mask.sum(-1)
@@ -199,7 +189,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
 
             # add position id to word token embedding
             position_ids = position_ids.int().to(self.device)
-            position_embeds = self.model.wpe(position_ids)
+            position_embeds = self.model.transformer.wpe(position_ids)
             lang_embeddings = lang_embeddings + position_embeds
             state_action_lang[lang_token_mask] = lang_embeddings
 
@@ -211,6 +201,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
                 lang_token_mask | combined_state_mask | combined_action_mask
             ).bool(),
             token_type_ids=kwargs.get("token_type_ids", None).long(),
+            lang_only_input=False,
         )
 
         # reshape x so the second dimension corresponds to states (0), actions (1)
@@ -242,7 +233,7 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
             # ================ LANGUAGE PREDICTION ================
             # use previous lang to predict next lang tokens
             lang_out = model_out[lang_token_mask].reshape(-1, self.embed_dim)
-            lang_token_logits = self.lm_head(lang_out)
+            lang_token_logits = self.model.lm_head(lang_out)
 
             # put it back into batch form
             lang_token_logits_full = torch.zeros(
@@ -315,7 +306,18 @@ class LB_SingleSeq_Decoder(pl.LightningModule):
         losses = {}
         if "language" in batch:
             lang_input = batch["language"]
-            lang_token_logits = self.forward_lang(**lang_input)
+            token_ids, attention_mask = (
+                lang_input["input_ids"],
+                lang_input["attention_mask"],
+            )
+
+            _, lang_token_logits, _ = self.forward_state_action_lang(
+                tokens=token_ids,
+                lang_token_mask=attention_mask,
+                token_type_ids=attention_mask,
+                combined_state_mask=1 - attention_mask,
+                combined_action_mask=1 - attention_mask,
+            )
 
             lang_only_pred_loss = self._compute_lang_pred_loss(
                 lang_token_logits=lang_token_logits,
