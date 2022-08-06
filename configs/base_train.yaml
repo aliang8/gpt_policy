@@ -1,3 +1,0 @@
-model: decoder_model.yaml
-data: data.yaml
-trainer: trainer.yaml

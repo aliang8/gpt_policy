@@ -16,6 +16,8 @@ def save_video_sequence(file, frames, fps=10.0):
         video.write(img.astype(np.uint8))
     video.release()
 
+    print(f"Saving video to: {file}")
+
 
 def save_episode_as_video(episode, filename, caption=""):
     frames = []
@@ -41,7 +43,10 @@ def save_episode_as_video(episode, filename, caption=""):
             thickness=1,
         )
 
-        text = f"{caption}"
+        text = f"curr skill: {caption}"
+
+        if "progress_pred" in episode:
+            text += f"\nprogress: {episode['progress_pred'][t]}"
 
         # add caption text
         y0, dy = 50, 20

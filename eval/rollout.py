@@ -30,10 +30,18 @@ class Rollout:
         self._episode_step, self._episode_reward = 0, 0
         self.device = "cuda"
 
+        # prompt is a period deliminated string
         if self.config.prompt:
-            self.prompt = self._agent.tokenizer(
-                f"{LANG_BOS_TOKEN} {self.config.prompt} {LANG_EOS_TOKEN}",
-                return_tensors="pt",
+            # if prompt has multiple sentences, split them
+            skills = self.config.prompt.split(". ")
+            skills_str = [
+                f"{LANG_BOS_TOKEN} {skill} {LANG_EOS_TOKEN}" for skill in skills
+            ]
+            self.prompts = skills
+            self.num_skills = len(skills_str)
+            self.curr_idx = 0
+            self.prompt_tokens = self._agent.tokenizer(
+                skills_str, padding=True, return_tensors="pt"
             )
         else:
             self.prompt = None
@@ -42,6 +50,7 @@ class Rollout:
         self._episode_step, self._episode_reward = 0, 0.0
         obs = self._env.reset()
         obs = self._postprocess_obs(obs)
+        self.curr_idx = 0
         return obs
 
     def _postprocess_obs(self, obs: np.ndarray):
@@ -53,18 +62,31 @@ class Rollout:
         for i in tqdm.tqdm(range(self.config.num_samples)):
             with torch.no_grad():
                 episode = self.rollout_single_episode()
+            episodes.append(episode)
             completed = episode.info[-1]["completed_tasks"]
             tasks_completed.update(completed)
+            print(tasks_completed)
+
             if self.config.save_video:
                 filename = os.path.join(
                     self.save_dir, f"{self.config.video_prefix}_video_{i}.mp4"
                 )
-                save_episode_as_video(
-                    episode, filename=filename, caption=self.config.prompt
-                )
+                caption = ""
+                if self.config.prompt:
+                    caption = self.config.prompt
+
+                save_episode_as_video(episode, filename=filename, caption=caption)
         return episodes, tasks_completed
 
     def rollout_single_episode(self):
+        """
+        Rollout the model for a single episode, until max episode length or task is completed.
+
+        Different modes of evaluation:
+        1. Initial state conditioning, feed s0 and autoregressively predict future actions
+        2. Explicit prompting, we directly provide the language prompt
+        3. Self-prompting, model tells itself what it should do.
+        """
         episode, done = [], False
         obs = self.reset()
 
@@ -78,19 +100,28 @@ class Rollout:
             .to(device=device, dtype=torch.float32)
         )
         actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
+        timesteps = torch.tensor(0, device=device, dtype=torch.long).reshape(1, 1)
 
         prompt, lang_token_ids, token_type_ids = "", None, None
 
-        if hasattr(self, "prompt") and self.prompt:
-            prompt, lang_token_ids = self.config.prompt, self.prompt["input_ids"]
-            lang_token_ids = lang_token_ids.to(device)
+        if hasattr(self, "prompt_tokens") and self.prompt_tokens is not None:
+            prompt = self.prompts[self.curr_idx]
+            lang_token_ids = self.prompt_tokens["input_ids"][self.curr_idx]
+            attn = self.prompt_tokens["attention_mask"][self.curr_idx]
+            lang_token_ids = lang_token_ids[attn.bool()].to(device)
             token_type_ids = torch.ones((1, lang_token_ids.shape[-1])).to(device)
+            self.curr_idx += 1
         elif self.config.self_prompting:
             # get initial prompt / skill
-            prompt, lang_token_ids, token_type_ids = self._agent.get_prompt()
+            (
+                prompt,
+                new_token_ids,
+                lang_token_ids,
+                token_type_ids,
+            ) = self._agent.get_prompt()
 
         if prompt:
-            print(f"Prompt: {prompt}")
+            print(f"Initial prompt: {prompt}")
 
         while not done and self._episode_step < self.config.max_episode_len:
             actions = torch.cat(
@@ -102,19 +133,71 @@ class Rollout:
                 lang_token_ids,
                 token_type_ids,
                 progress_pred,
-            ) = self._agent.get_action(states, actions, lang_token_ids, token_type_ids)
+            ) = self._agent.get_action(
+                states=states,
+                actions=actions,
+                timesteps=timesteps,
+                lang_token_ids=lang_token_ids,
+                token_type_ids=token_type_ids,
+            )
 
             # time to start a new skill?
             # print(progress_pred[-1])
-            # if progress_pred[-1].item() > 0.9:
-            #     import ipdb
+            if progress_pred is not None and progress_pred[-1].item() > 0.95:
+                if hasattr(self, "prompt_tokens"):
+                    if self.curr_idx >= self.num_skills:
+                        break
 
-            #     ipdb.set_trace()
+                    next_skill_tokens = self.prompt_tokens["input_ids"][self.curr_idx]
+                    attn = self.prompt_tokens["attention_mask"][self.curr_idx]
+                    next_skill_tokens = next_skill_tokens[attn.bool()].to(device)
+                    lang_token_ids = torch.cat(
+                        [lang_token_ids, next_skill_tokens], dim=-1
+                    )
+                    token_type_ids = torch.cat(
+                        (
+                            token_type_ids,
+                            torch.ones((1, next_skill_tokens.shape[-1])).to(device),
+                        ),
+                        dim=-1,
+                    )
+                    print(f"Prompt: {self.prompts[self.curr_idx]}")
+                    self.curr_idx += 1
+
+                elif self.config.self_prompting:
+                    # include state, action in the self-prompting
+                    # prompt, new_token_ids, lang_token_ids, token_type_ids = self._agent.get_prompt(
+                    #     states, actions, lang_token_ids, token_type_ids
+                    # )
+
+                    # don't include state, action and only condition on past language p(langB | langA)
+                    (
+                        prompt,
+                        new_token_ids,
+                        lang_token_ids,
+                        _,
+                    ) = self._agent.get_prompt(
+                        lang_token_ids=lang_token_ids,
+                        token_type_ids=torch.ones((1, lang_token_ids.shape[-1])).to(
+                            device
+                        ),
+                    )
+                    token_type_ids = torch.cat(
+                        [
+                            token_type_ids,
+                            torch.ones((1, new_token_ids.shape[-1])).to(device),
+                        ],
+                        dim=1,
+                    )
+                    print(f"next prompt: {prompt}")
 
             actions[-1] = action
             action = ten2ar(action.squeeze())
 
             next_obs, reward, done, info = self._env.step(action)
+
+            if progress_pred is not None:
+                progress_pred = round(progress_pred[-1].item(), 4)
 
             episode.append(
                 AttrDict(
@@ -123,6 +206,7 @@ class Rollout:
                     next_observation=next_obs,
                     done=done,
                     reward=reward,
+                    progress_pred=progress_pred,
                     info=info,
                 )
             )
@@ -133,6 +217,15 @@ class Rollout:
                 torch.from_numpy(next_obs).to(device=device).reshape(1, state_dim)
             )
             states = torch.cat([states, cur_state], dim=0)
+            timesteps = torch.cat(
+                [
+                    timesteps,
+                    torch.ones((1, 1), device=device, dtype=torch.long)
+                    * (self._episode_step + 1),
+                ],
+                dim=1,
+            )
+
             obs = next_obs
             self._episode_step += 1
             self._episode_reward += reward

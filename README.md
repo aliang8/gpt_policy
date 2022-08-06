@@ -41,4 +41,8 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue evaluate.py --config configs/
 TODO: 
 [] Discretize action into bins
 
+<<<<<<< HEAD
 [] Reformat actions 
+=======
+[] Combine lang-only and paired
+>>>>>>> 5d3b21cb84d192ba4c23a15b49583a869706f505

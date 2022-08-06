@@ -108,6 +108,7 @@ class KitchenDataset(BaseDataset):
                 AttrDict(
                     states=self.dataset["observations"][start : end_idx + 1],
                     actions=self.dataset["actions"][start : end_idx + 1],
+                    timesteps=np.arange(end_idx + 1 - start),
                 )
             )
             start = end_idx + 1
@@ -591,8 +592,14 @@ class LanguageBehaviorDataModule(KitchenDataModule):
 
     def setup(self, stage: Optional[str] = None):
         if "language" in self.hparams.modalities:
-            l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
-            self.lang_dataset = instantiate(l_cfg, _recursive_=False)
+            # merge multiple language datasets
+            l_datasets = []
+            for dataset in self.hparams.language_datasets:
+                self.hparams["language_dataset_cls"]["_target_"] = dataset
+                l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
+                l_datasets.append(instantiate(l_cfg, _recursive_=False))
+
+            self.lang_dataset = ConcatDataset(l_datasets)
 
         if "paired" in self.hparams.modalities:
             p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])

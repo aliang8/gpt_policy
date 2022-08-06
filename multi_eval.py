@@ -12,7 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks import ModelCheckpoint
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.cli import LightningCLI
-
+from evaluate import load_model_and_env_from_cfg, create_param_grid
 
 """
 Runs eval for different train models across separate GPUs
@@ -24,27 +24,11 @@ used_gpu_list = multiprocessing.Manager().list([0] * total_gpu_num)
 lock = multiprocessing.Lock()
 
 
-def run_eval(eval_cfg):
-    save_dir = eval_cfg.sampler.config.save_dir
-    exp_name = eval_cfg.sampler.config.exp_name
-    ckpt_dir = os.path.join(save_dir, exp_name)
-    ckpts = glob.glob(ckpt_dir + "/*.ckpt")
-    ckpt_path = sorted(ckpts)[-1]
-
-    print(f"loading model from: {ckpt_path}")
-    assert os.path.exists(ckpt_path)
-
-    # load the model
-    # TODO: fix this
-    model = LB_SingleSeq_Decoder.load_from_checkpoint(checkpoint_path=ckpt_path)
-    model = model.cuda()
-    model.eval()
-
-    # create environment
-    env = instantiate(eval_cfg.env)
+def run_eval(conf):
+    model, env = load_model_and_env_from_cfg(conf)
 
     # create rollout helper
-    rollout = instantiate(eval_cfg.sampler, env=env, agent=model)
+    rollout = instantiate(conf.sampler, env=env, agent=model)
 
     # collect trajectories
     episodes = rollout.rollout_multi_episode()
@@ -86,33 +70,14 @@ def multi_gpu_testing_wrapper(eval_cfg, index, gpu_id=None, available_gpu_num=1)
 
 def main():
     # ================ CREATE PARAMETER GRID ================
-    # get arguments from command line
-    cfg = OmegaConf.from_cli()
-
-    confs = []
-    for conf_f in cfg["eval_config_files"]:
-        confs.append(OmegaConf.load(conf_f))
-
-    del cfg["eval_config_files"]
-
-    all_configs = []
-    # do some hacky thing to create a parameter grid for the exp name
-    custom_cfg = OmegaConf.to_container(cfg)
-    for i, exp_name in enumerate(custom_cfg["exp_name"]):
-        base_configs = copy.deepcopy(confs)
-        cli_cfg_single = copy.deepcopy(cfg)
-        cli_cfg_single.sampler.config.exp_name = exp_name
-        del cli_cfg_single.exp_name
-        base_configs.append(cli_cfg_single)
-        eval_cfg = OmegaConf.merge(*base_configs)
-        all_configs.append(eval_cfg)
+    base_cfg, all_configs = create_param_grid()
 
     # setup GPU
     available_gpu_num = 4
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
     assert available_gpu_num <= total_gpu_num
 
-    if "debug" in cfg and cfg.debug:
+    if "debug" in base_cfg and base_cfg.debug:
         episodes, info = run_eval(all_configs[0])
         num_episodes = len(episodes)
         print(f"Collected {num_episodes} episodes")

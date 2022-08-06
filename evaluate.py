@@ -1,5 +1,6 @@
 import os
 import glob
+import copy
 from model.lb_mm_decoder import LB_MM_Decoder
 from model.lb_single_seq_decoder import LB_SingleSeq_Decoder
 from argparse import ArgumentParser
@@ -11,27 +12,34 @@ from hydra.utils import instantiate
 from pytorch_lightning.utilities.cli import LightningCLI
 
 
-if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument("--eval-config-files", type=str, nargs="+", default="")
+def create_param_grid():
+    # get arguments from command line
+    cfg = OmegaConf.from_cli()
 
-    args, _ = parser.parse_known_args()
+    confs = []
+    for conf_f in cfg["eval_config_files"]:
+        confs.append(OmegaConf.load(conf_f))
 
-    # combine multiple configs together
-    configs = []
-    for conf_f in args.eval_config_files:
-        cfg = OmegaConf.load(conf_f)
-        configs.append(cfg)
-    cli_cfg = OmegaConf.from_cli()
-    configs.append(cli_cfg)
+    del cfg["eval_config_files"]
 
-    eval_cfg = OmegaConf.merge(*configs)
+    all_configs = []
+    # do some hacky thing to create a parameter grid for the exp name
+    custom_cfg = OmegaConf.to_container(cfg)
 
-    print("Eval config:")
-    print(OmegaConf.to_yaml(eval_cfg))
+    for i, exp_name in enumerate(custom_cfg["exp_name"]):
+        base_configs = copy.deepcopy(confs)
+        cli_cfg_single = copy.deepcopy(cfg)
+        cli_cfg_single.sampler.config.exp_name = exp_name
+        del cli_cfg_single.exp_name
+        base_configs.append(cli_cfg_single)
+        eval_cfg = OmegaConf.merge(*base_configs)
+        all_configs.append(eval_cfg)
+    return cfg, all_configs
 
-    save_dir = eval_cfg.sampler.config.save_dir
-    exp_name = eval_cfg.sampler.config.exp_name
+
+def load_model_and_env_from_cfg(cfg):
+    save_dir = cfg.sampler.config.save_dir
+    exp_name = cfg.sampler.config.exp_name
     ckpt_dir = os.path.join(save_dir, exp_name)
     ckpts = glob.glob(ckpt_dir + "/*.ckpt")
     ckpt_path = sorted(ckpts)[-1]
@@ -39,17 +47,29 @@ if __name__ == "__main__":
     print(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
 
-    # load the model
-    # TODO: fix this
-    model = LB_SingleSeq_Decoder.load_from_checkpoint(checkpoint_path=ckpt_path)
+    model = LB_SingleSeq_Decoder.load_from_checkpoint(
+        checkpoint_path=ckpt_path, training=False, strict=False
+    )
     model = model.cuda()
     model.eval()
 
     # create environment
-    env = instantiate(eval_cfg.env)
+    env = instantiate(cfg.env)
+    return model, env
+
+
+def main():
+    base_cfg, combined_conf = create_param_grid()[0]
+
+    model, env = load_model_and_env_from_cfg(combined_conf)
 
     # create rollout helper
-    rollout = instantiate(eval_cfg.sampler, env=env, agent=model)
+    rollout = instantiate(combined_conf.sampler, env=env, agent=model)
 
     # collect trajectories
-    episode = rollout.rollout_multi_episode()
+    episodes = rollout.rollout_multi_episode()
+    return episodes
+
+
+if __name__ == "__main__":
+    main()
