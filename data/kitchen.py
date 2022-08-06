@@ -19,7 +19,7 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-from data.dataset import BaseDataset
+from data.dataset import BaseDataset, SingleSequenceDataset
 
 
 class KitchenDataset(BaseDataset):
@@ -418,9 +418,8 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         return self.data[idx]
 
 
-class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
+class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenDataset):
     def __init__(self, dataset: List, *args, **kwargs):
-        self.hparams = kwargs["hparams"]
         self.dataset = dataset
         # split data into sequences
         self.sequences = self._split_dataset_into_sequences()
@@ -428,146 +427,13 @@ class SingleSequenceKitchenDataset(SemanticSkillsKitchenDataset):
         # add skill annotations
         self._add_skill_info()
 
-        # split sequences into individual semantic skills
-        self.sequences = self._split_by_semantic_skills()
-
         # add language annotations
         if self.hparams.load_lang:
             self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
             self.skill_to_token_map = self._get_lang_tokens()
             self._add_language_annotations()
 
-        # combine everything into a single sequence
-        full_sequence = []
-        token_type_ids = []
-        state_mask = []
-        action_mask = []
-        lang_token_mask = []
-        # lang_attn_mask = []
-        all_states = []
-        all_actions = []
-        all_dones = []
-
-        start = 0
-
-        # combine every state/action/language into a long sequence
-        # L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
-        # then split tokens into chunk for each data sample
-        # create masks to index the language, state, and actions separately
-
-        for seq in self.sequences:
-            states, actions = seq["states"], seq["actions"]
-
-            # ignore pads
-            if self.hparams.load_lang:
-                lang_tokens, lang_attn = (
-                    seq["lang_token_ids"],
-                    seq["lang_attention_mask"],
-                )
-                num_lang_tokens = sum(lang_attn)
-            else:
-                num_lang_tokens = 0
-
-            all_states.append(states)
-            all_actions.append(actions)
-            all_dones.append(seq.done)
-
-            T, action_dim = actions.shape
-            if self.hparams.get("discretize_actions", False):
-                total_num_tokens = T + action_dim * T + num_lang_tokens
-            else:
-                total_num_tokens = 2 * T + num_lang_tokens
-
-            concat_sequence = np.zeros((total_num_tokens))
-            lang_token_mask_ = np.zeros((total_num_tokens))
-            # lang_attn_mask_ = np.zeros((total_num_tokens))
-            action_mask_ = np.zeros((total_num_tokens))
-            state_mask_ = np.zeros((total_num_tokens))
-
-            state_r = slice(num_lang_tokens, total_num_tokens, 2)
-            action_r = slice(num_lang_tokens + 1, total_num_tokens, 2)
-
-            state_mask_[state_r] = 1
-            action_mask_[action_r] = 1
-            concat_sequence[state_r] = np.arange(start, start + T)
-            concat_sequence[action_r] = np.arange(start, start + T)
-
-            if self.hparams.load_lang:
-                if self.hparams.prepend_lang:  # add language before state/action
-                    lang_r = slice(0, num_lang_tokens)
-                    lang_token_mask_[lang_r] = 1
-                    # lang_attn_mask_[lang_r] = lang_attn
-                    concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
-                else:
-                    # TODO: fix
-                    lang_token_mask_[-num_lang_tokens:] = 1
-                    state_mask_[:T] = 1
-                    action_mask_[T : 2 * T] = 1
-                    concat_sequence[-num_lang_tokens:] = lang_tokens
-
-            # 0 - state / action and 1 for language
-            token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
-            full_sequence.append(concat_sequence)
-            token_type_ids.append(token_type_id)
-            state_mask.append(state_mask_)
-            action_mask.append(action_mask_)
-            lang_token_mask.append(lang_token_mask_)
-            # lang_attn_mask.append(lang_attn_mask_)
-
-            start += T
-
-        # flatten
-        full_sequence = np.concatenate(full_sequence)
-        token_type_ids = np.concatenate(token_type_ids)
-        state_mask = np.concatenate(state_mask)
-        action_mask = np.concatenate(action_mask)
-        lang_token_mask = np.concatenate(lang_token_mask)
-        # lang_attn_mask = np.concatenate(lang_attn_mask)
-        all_states = np.concatenate(all_states)
-        all_actions = np.concatenate(all_actions)
-        all_dones = np.concatenate(all_dones)
-
-        # chunk
-        self.chunks = []
-        chunk_size = self.hparams.chunk_size
-
-        i = 0
-
-        while i < len(full_sequence):
-            if i + chunk_size > len(full_sequence):  # need to drop the last chunk
-                break
-
-            r = slice(i, i + chunk_size)
-
-            # try to get an even number of states and actions
-            j = 0
-            while state_mask[r].sum() != action_mask[r].sum():
-                j += 1
-                r = slice(i, i + chunk_size + j)
-
-            i += chunk_size + j
-
-            state_indices = full_sequence[r][state_mask[r].astype(np.bool)]
-            action_indices = full_sequence[r][action_mask[r].astype(np.bool)]
-
-            states = np.take(all_states, state_indices.astype(np.int), axis=0)
-            actions = np.take(all_actions, action_indices.astype(np.int), axis=0)
-            dones = np.take(all_dones, action_indices.astype(np.int), axis=0)
-
-            self.chunks.append(
-                {
-                    "tokens": full_sequence[r],
-                    "states": states,
-                    "actions": actions,
-                    "dones": dones,
-                    "state_mask": np.ones(len(states)),
-                    "action_mask": np.ones(len(actions)),
-                    "combined_state_mask": state_mask[r],
-                    "combined_action_mask": action_mask[r],
-                    "lang_token_mask": lang_token_mask[r],
-                    "token_type_ids": token_type_ids[r],
-                }
-            )
+        super().__init__(dataset, *args, **kwargs)
 
     def _add_language_annotations(self):
         for _, seq in enumerate(self.sequences):
