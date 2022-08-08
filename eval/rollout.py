@@ -61,7 +61,7 @@ class Rollout:
         tasks_completed = Counter()
         for i in tqdm.tqdm(range(self.config.num_samples)):
             with torch.no_grad():
-                episode = self.rollout_single_episode()
+                episode = self.rollout_single_episode_binary()
             episodes.append(episode)
             completed = episode.info[-1]["completed_tasks"]
             tasks_completed.update(completed)
@@ -207,6 +207,92 @@ class Rollout:
                     done=done,
                     reward=reward,
                     progress_pred=progress_pred,
+                    info=info,
+                )
+            )
+            if self.config.save_video:
+                episode[-1].image = self._env.render()
+
+            cur_state = (
+                torch.from_numpy(next_obs).to(device=device).reshape(1, state_dim)
+            )
+            states = torch.cat([states, cur_state], dim=0)
+            timesteps = torch.cat(
+                [
+                    timesteps,
+                    torch.ones((1, 1), device=device, dtype=torch.long)
+                    * (self._episode_step + 1),
+                ],
+                dim=1,
+            )
+
+            obs = next_obs
+            self._episode_step += 1
+            self._episode_reward += reward
+
+        # set last step in episode as done
+        episode[-1].done = True
+        return listdict2dictlist(episode)
+
+    def rollout_single_episode_binary(self):
+        episode, done = [], False
+        obs = self.reset()
+
+        state_dim, action_dim = self._agent.state_dim, self._agent.action_dim
+        device = self.device
+
+        # keep track of the entire history to feed into GPT
+        states = (
+            torch.from_numpy(obs)
+            .reshape(1, state_dim)
+            .to(device=device, dtype=torch.float32)
+        )
+
+        binary_tokens = torch.zeros((0, 1), device=device, dtype=torch.float32)
+        actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
+        timesteps = torch.tensor(0, device=device, dtype=torch.long).reshape(1, 1)
+        lang_token_ids = None
+        token_type_ids = None
+
+        while not done and self._episode_step < self.config.max_episode_len:
+            # print("step: ", self._episode_step)
+            binary_tokens = torch.cat(
+                [binary_tokens, torch.zeros((1, 1), device=device)], dim=0
+            )
+            actions = torch.cat(
+                [actions, torch.zeros((1, action_dim), device=device)], dim=0
+            )
+
+            (
+                action,
+                lang_token_ids,
+                token_type_ids,
+                binary_token,
+            ) = self._agent.get_action(
+                states=states,
+                actions=actions,
+                binary_tokens=binary_tokens,
+                timesteps=timesteps,
+                lang_token_ids=lang_token_ids,
+                token_type_ids=token_type_ids,
+            )
+
+            actions[-1] = action
+            binary_tokens[-1] = binary_token[-1]
+            action = ten2ar(action.squeeze())
+            binary_token = ten2ar(binary_token.squeeze())
+
+            next_obs, reward, done, info = self._env.step(action)
+
+            episode.append(
+                AttrDict(
+                    observation=obs,
+                    action=action,
+                    next_observation=next_obs,
+                    done=done,
+                    reward=reward,
+                    progress_pred=None,
+                    binary_token=binary_token,
                     info=info,
                 )
             )

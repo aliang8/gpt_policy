@@ -1,8 +1,8 @@
 import os
 import glob
 import copy
+import importlib
 from model.lb_mm_decoder import LB_MM_Decoder
-from model.lb_single_seq_decoder import LB_SingleSeq_Decoder
 from argparse import ArgumentParser
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
@@ -47,7 +47,8 @@ def load_model_and_env_from_cfg(cfg):
     print(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
 
-    model = LB_SingleSeq_Decoder.load_from_checkpoint(
+    model_cls = importlib.import_module(cfg.sampler.config.model_target).Model
+    model = model_cls.load_from_checkpoint(
         checkpoint_path=ckpt_path, training=False, strict=False
     )
     model = model.cuda()

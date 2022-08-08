@@ -59,6 +59,7 @@ class SingleSequenceDataset(BaseDataset):
             "all_states": [],
             "all_actions": [],
             "all_dones": [],
+            "all_timesteps": [],
         }
 
         start = 0
@@ -69,7 +70,7 @@ class SingleSequenceDataset(BaseDataset):
         # create masks to index the language, state, and actions separately
 
         for seq in self.semantic_seqs:
-            states, actions = seq["states"], seq["actions"]
+            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
 
             # ignore pads
             if self.hparams.load_lang:
@@ -83,6 +84,8 @@ class SingleSequenceDataset(BaseDataset):
 
             output["all_states"].append(states)
             output["all_actions"].append(actions)
+            output["all_timesteps"].append(timesteps)
+
             if "done" in seq:
                 output["all_dones"].append(seq.done)
 
@@ -166,6 +169,9 @@ class SingleSequenceDataset(BaseDataset):
             actions = np.take(
                 concat_seq["all_actions"], action_indices.astype(np.int), axis=0
             )
+            timesteps = np.take(
+                concat_seq["all_timesteps"], state_indices.astype(np.int), axis=0
+            )
 
             if "all_dones" in concat_seq and len(concat_seq["all_dones"]) > 0:
                 dones = np.take(
@@ -179,6 +185,7 @@ class SingleSequenceDataset(BaseDataset):
                     "tokens": concat_seq["full_sequence"][r],
                     "states": states,
                     "actions": actions,
+                    "timesteps": timesteps,
                     "dones": dones,
                     "state_mask": np.ones(len(states)),
                     "action_mask": np.ones(len(actions)),
@@ -196,3 +203,97 @@ class SingleSequenceDataset(BaseDataset):
 
     def __getitem__(self, idx):
         return self.chunks[idx]
+
+
+class SingleSequenceBinaryDataset(SingleSequenceDataset):
+    def _tokenize_and_concatenate_sequence(self):
+        """
+        Combine every state/action/language into a long sequence
+        e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
+        Add a binary token after the state to denote whether to predict
+        language or action next. 1 - predict language, 0 - predict action
+
+        The last token of language predicts the first action.
+        """
+        output = {
+            "full_sequence": [],
+            "token_type_ids": [],
+            "state_mask": [],
+            "action_mask": [],
+            "lang_token_mask": [],
+            "all_states": [],
+            "all_actions": [],
+            "all_dones": [],
+            "all_timesteps": [],
+        }
+
+        start = 0
+        for seq in self.semantic_seqs:
+            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
+
+            # ignore pads
+            if self.hparams.load_lang:
+                lang_tokens, lang_attn = (
+                    seq["lang_token_ids"],
+                    seq["lang_attention_mask"],
+                )
+                num_lang_tokens = sum(lang_attn)
+            else:
+                num_lang_tokens = 0
+
+            output["all_states"].append(states)
+            output["all_actions"].append(actions)
+            output["all_timesteps"].append(timesteps)
+            if "done" in seq:
+                output["all_dones"].append(seq.done)
+
+            T = actions.shape[0]
+            # states - T, actions - T, predictor token - T
+            total_num_tokens = 3 * T + num_lang_tokens
+
+            concat_sequence = np.zeros((total_num_tokens))
+            lang_token_mask_ = np.zeros((total_num_tokens))
+            action_mask_ = np.zeros((total_num_tokens))
+            state_mask_ = np.zeros((total_num_tokens))
+
+            # Fix first state, binary_token, action
+            # s1, <1> | L1 | a1
+            state_mask_[0] = 1
+            concat_sequence[0] = 0
+            if num_lang_tokens > 0:
+                concat_sequence[
+                    1
+                ] = 1  # mark the binary token before the first language
+            state_r = slice(2 + num_lang_tokens + 1, total_num_tokens, 3)
+            action_r = slice(2 + num_lang_tokens, total_num_tokens, 3)
+
+            state_mask_[state_r] = 1
+            action_mask_[action_r] = 1
+
+            # temporary put filler tokens for the state so
+            # that we can extract the actual states when chunking
+            concat_sequence[state_r] = np.arange(start + 1, start + T)
+            concat_sequence[action_r] = np.arange(start, start + T)
+
+            # insert the language tokens into the sequence
+            if self.hparams.load_lang:
+                lang_r = slice(2, num_lang_tokens + 2)
+                lang_token_mask_[lang_r] = 1
+                concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
+
+            # add to list
+            # token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
+            token_type_id = 0 * concat_sequence + 1 * lang_token_mask_
+            output["full_sequence"].append(concat_sequence)
+            output["token_type_ids"].append(token_type_id)
+            output["state_mask"].append(state_mask_)
+            output["action_mask"].append(action_mask_)
+            output["lang_token_mask"].append(lang_token_mask_)
+
+            start += T
+
+        for k, v in output.items():
+            if len(v) > 0:
+                output[k] = np.concatenate(v)
+
+        return output

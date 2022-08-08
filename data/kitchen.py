@@ -19,7 +19,8 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-from data.dataset import BaseDataset, SingleSequenceDataset
+from data.dataset import BaseDataset, SingleSequenceDataset, SingleSequenceBinaryDataset
+from torch.utils.data import ConcatDataset
 
 
 class KitchenDataset(BaseDataset):
@@ -65,7 +66,7 @@ class KitchenDataset(BaseDataset):
             self.skill_to_token_map = self._get_lang_tokens()
 
             self._add_language_annotations()
-            self._add_masks()
+            # self._add_masks()
 
         del self.sequences[508]  # too long for the model
 
@@ -128,7 +129,7 @@ class KitchenDataset(BaseDataset):
             f"{LANG_BOS_TOKEN} {v[0]} {LANG_EOS_TOKEN}"
             for k, v in self.skill_map.items()
         ]
-        tokens = self.tokenizer(lang_anns, padding="longest")
+        tokens = self.tokenizer(lang_anns, padding="longest", return_tensors="np")
 
         skill_to_token_map = {
             k: {
@@ -303,9 +304,8 @@ class KitchenDataset(BaseDataset):
 
 
 class SemanticSkillsKitchenDataset(KitchenDataset):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.data = self._split_by_semantic_skills()
+    def __init__(self, dataset: List, *args, **kwargs):
+        super().__init__(dataset, *args, **kwargs)
 
     def _split_seq(self, seq, start, end):
         new_seq = AttrDict()
@@ -364,23 +364,10 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         return all_semantic_seqs
 
     def _add_language_annotations(self):
-        for i, seq in enumerate(self.data):
+        for _, seq in enumerate(self.sequences):
             skill = self.OBJS[int(seq.skills[0])]
-            if i == len(self.data) - 1:
-                next_seq = seq
-            else:
-                next_seq = self.data[i + 1]
-            next_skill = self.OBJS[int(next_seq.skills[0])]
-            seq.lang_token_ids = self.skill_to_token_map[skill][0]["token_ids"]
-            seq.next_lang_token_ids = self.skill_to_token_map[next_skill][1][
-                "token_ids"
-            ]
-            seq.lang_attention_mask = self.skill_to_token_map[skill][0][
-                "attention_mask"
-            ]
-            seq.next_lang_attention_mask = self.skill_to_token_map[next_skill][1][
-                "attention_mask"
-            ]
+            seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
+            seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
 
     # def collate_fn(self, data):
     #     # custom collate fn for pad on the fly and sorted examples
@@ -420,98 +407,19 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
 
 
 class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenDataset):
-    def __init__(self, dataset: List, *args, **kwargs):
-        self.dataset = dataset
-        # split data into sequences
-        self.sequences = self._split_dataset_into_sequences()
-
-        # add skill annotations
-        self._add_skill_info()
-
-        # add language annotations
-        if self.hparams.load_lang:
-            self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
-            self.skill_to_token_map = self._get_lang_tokens()
-            self._add_language_annotations()
-
-        super().__init__(dataset, *args, **kwargs)
-
-    def _add_language_annotations(self):
-        for _, seq in enumerate(self.sequences):
-            skill = self.OBJS[int(seq.skills[0])]
-            seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
-            seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
-
-    def __len__(self):
-        return len(self.chunks)
-
-    def __getitem__(self, idx):
-        return self.chunks[idx]
+    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
+        self.hparams = hparams
+        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SingleSequenceDataset.__init__(self, *args, **kwargs)
 
 
-class KitchenSequenceDataset(SemanticSkillsKitchenDataset):
-    """
-    Combine all the data into a long sequence
-    and then split it up into blocks for next token prediction training
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        if self.hparams.load_lang:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.hparams.decoder_model_cls, return_tensors="np"
-            )
-
-        self.data, self.masks = self._create_long_sequence()
-
-    def _create_long_sequence(self):
-        data = []
-        token_type_mask = []
-        for seq in self.semantic_seqs:
-            # T x (state_dim + action_dim)
-            state_action = np.concatenate([seq["states"], seq["actions"]], axis=-1)
-
-            # tokenize the string
-            # (num_tokens, )
-            lang_tokens = np.expand_dims(
-                self.tokenizer(seq.lang_ann)["input_ids"], axis=0
-            )
-
-            # pad the language so that we can combine with state_action
-            pad_size = max(state_action.shape[-1], lang_tokens.shape[-1])
-            padded_lang_tokens = np.zeros((1, pad_size))
-            padded_lang_tokens[:, : lang_tokens.shape[-1]] = lang_tokens
-
-            # (T + 1) x pad_size
-            state_action_language = np.concatenate(
-                [state_action, padded_lang_tokens], axis=0
-            )
-
-            # mask to denote that the last timestep is the lang tokens
-            mask = np.zeros((state_action.shape[0] + 1,))
-            mask[-1] = 1.0
-
-            data.append(state_action_language)
-            token_type_mask.append(mask)
-
-        data = np.concatenate(data, axis=0)
-        token_type_mask = np.concatenate(token_type_mask, axis=0)
-
-        # chunk the data by block size (number of tokens in each batch)
-        data_chunks = []
-        mask_chunks = []
-        for i in range(0, data.shape[0], self.hparams.block_size):
-            data_chunks.append(data[i : i + self.hparams.block_size])
-            mask_chunks.append(token_type_mask[i : i + self.hparams.block_size])
-
-        return data_chunks, mask_chunks
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return {"sequence": self.data[idx], "mask": self.masks[idx]}
+class KitchenSingleSequenceBinaryDataset(
+    SingleSequenceBinaryDataset, SemanticSkillsKitchenDataset
+):
+    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
+        self.hparams = hparams
+        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SingleSequenceDataset.__init__(self, *args, **kwargs)
 
 
 @DATAMODULE_REGISTRY
@@ -667,19 +575,6 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 collate_fn=self.paired_dataset.collate_fn,
             )
             loaders["paired"] = paired_dl
-
-        # if "paired" in self.hparams.modalities:
-        #     paired_dl = instantiate(
-        #         cfg,
-        #         dataset=self.paired_train,
-        #         pin_memory=True,
-        #         worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-        #         batch_sampler=self.paired_dataset.get_sampler(
-        #             self.paired_train.indices
-        #         ),
-        #         collate_fn=self.paired_dataset.collate_fn,
-        #     )
-        #     loaders["paired"] = paired_dl
 
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader

@@ -12,8 +12,9 @@ class LanguageDataset(BaseDataset):
     annotation / description. Tokenize each sentence.
     """
 
-    def __init__(self, text: str = None, *args, **kwargs):
+    def __init__(self, hparams: Dict, text: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.hparams = hparams
         if text is None:
             text = self.get_text()
 
