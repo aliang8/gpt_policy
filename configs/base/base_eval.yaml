@@ -1,0 +1,18 @@
+sampler:
+  _target_: eval.rollout.Rollout
+  config:
+    max_episode_len: 280
+    save_video: False
+    num_samples: 10
+    prompt: null
+    video_prefix: null
+    save_dir: /data/anthony/gpt_transformer/logs
+    exp_name: test
+    self_prompting: False 
+    model_target: model.lb_single_seq_binary_decoder
+
+env:
+  _target_: envs.kitchen.KitchenEnv
+  config:
+    # name: kitchen-mixed-v0  # kitchen-all-tasks-v0
+    name: kitchen-all-tasks-v0

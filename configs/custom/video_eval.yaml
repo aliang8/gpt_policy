@@ -1,0 +1,4 @@
+sampler:
+  config:
+    save_video: True 
+    num_samples: 2

@@ -1,0 +1,64 @@
+_target_: data.kitchen.LanguageBehaviorDataModule
+data_conf: 
+  env_name: kitchen-mixed-v0
+  split:
+    train: 0.8
+    val: 0.2
+  batch_size: 4
+  data_dir: /data/anthony/kitchen/single_ann
+  state_dim: 60
+  action_dim: 9
+  modalities:
+    # - behavior
+    - paired
+    - language
+
+  dataset_cls: # config for the dataset
+    _target_: data.kitchen.SingleSequenceKitchenDataset
+    hparams:
+      load_frac_done: True
+      load_lang: True
+      decoder_model_cls: gpt2
+      subseq_len: 10
+      data_dir: ${data_conf.data_dir} 
+      annotation_file: annotations.json
+      add_lang_before_state: False
+      discretize_actions: False
+      num_bins: 256
+      prepend_lang: True
+      chunk_size: 512
+  
+  behavior_dataset_cls: 
+    _target_: data.kitchen.SingleSequenceKitchenDataset
+    hparams: 
+      load_frac_done: True
+      load_lang: False
+      data_dir: ${data_conf.data_dir} 
+      discretize_actions: False
+      num_bins: 256
+      chunk_size: 512
+
+  paired_dataset_cls: ${data_conf.dataset_cls}
+
+  language_datasets: 
+    - data.language.LanguageDataset
+
+  language_dataset_cls: # target is provided in the code
+    hparams: 
+      data_dir: ${data_conf.data_dir} 
+      vocab_file: kitchen.vocab
+      mapping_file: text_to_emb.pkl
+      annotation_file: annotations.json
+      language_skills_file: skills_small.txt
+      chunk_size: ${data_conf.dataset_cls.hparams.chunk_size}
+      decoder_model_cls: ${data_conf.dataset_cls.hparams.decoder_model_cls}
+      
+      # wikihow specific
+      wikihow_data_dir: /data/anthony/wikihow 
+      wikihow_data_file: combined_text.txt
+
+  dataloader_cls:
+    _target_: data.sampler.RepeatedDataLoader
+    n_repeat: 10
+    num_workers: 4
+    batch_size: 8

@@ -1,0 +1,17 @@
+_target_: model.lb_single_seq_decoder.Model # model.lb_mm_decoder.LB_MM_Decoder
+model_conf:
+  decoder_model_cls: gpt2
+  optim_cls: adam
+  lr: 1e-4
+  hidden_dim: 768
+  # state_dim: ${data.init_args.data_conf.state_dim}
+  state_dim: 60
+  # action_dim: ${data.init_args.data_conf.action_dim}
+  action_dim: 9
+  output_gaussian: False
+  discretize_actions: False
+  num_bins: 256
+  train_paired_lang: False
+  # pred_progress: True
+  max_ep_len: 1000
+  load_pretrained_lm_weights: True

@@ -1,0 +1,9 @@
+logger: 
+  - _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: /data/anthony/gpt_transformer/logs
+    name: pretrained_LM
+  - _target_: pytorch_lightning.loggers.WandbLogger
+    save_dir: ${logger[0].save_dir}
+    name: ${logger[0].name}
+    entity: clvr
+    project: gpt_lang_transformer

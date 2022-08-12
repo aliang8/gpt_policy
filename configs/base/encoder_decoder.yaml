@@ -1,0 +1,119 @@
+model:
+  class_path: model.lb_mm_transformer.LB_MM_Transformer
+  init_args:
+    model_conf:
+      optim_cls: adam
+      lr: 1e-4
+      hidden_dim: 768
+      state_dim: ${data.init_args.data_conf.state_dim}
+      action_dim: ${data.init_args.data_conf.action_dim}
+      
+data:
+  class_path: data.kitchen.LanguageBehaviorDataModule
+  init_args:
+    data_conf: 
+      env_name: kitchen-mixed-v0
+      split:
+        train: 0.8
+        val: 0.2
+      batch_size: 4
+      data_dir: /data/anthony/kitchen/single_ann
+      state_dim: 60
+      action_dim: 9
+
+      dataset_cls: # config for the dataset
+        _target_: data.kitchen.SemanticSkillsKitchenDataset
+        hparams:
+          load_frac_done: True
+          load_language_embs: True
+          subseq_len: 10
+          
+          dataset_sampler_cls:
+            _target_: data.sampler.LengthSortBatchSamplerWithFirstMaxLength
+            batch_size: ${data.init_args.data_conf.batch_size}
+
+      behavior_dataset_cls: ${data.init_args.data_conf.dataset_cls}
+
+      language_dataset_cls: 
+        _target_: data.language_skills.LanguageSkillsDataset
+        hparams: 
+          data_dir: ${data.init_args.data_conf.data_dir} 
+          vocab_file: kitchen.vocab
+          mapping_file: text_to_emb.pkl
+          annotation_file: annotations.json
+          language_skills_file: skills_small.txt
+          encoder_model: bert-base-uncased
+          mlm: True 
+          mlm_probability: 0.15
+
+          language_dataset_sampler_cls:
+            _target_: data.sampler.RepeatedSampler
+          
+      dataloader_cls:
+        _target_: data.sampler.RepeatedDataLoader
+        n_repeat: 50
+        num_workers: 4
+
+seed_everything: null
+trainer:
+  logger: true
+  checkpoint_callback: null
+  enable_checkpointing: true
+  callbacks: null
+  default_root_dir: null
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  process_position: 0
+  num_nodes: 1
+  num_processes: null
+  devices: 1
+  gpus: 1
+  auto_select_gpus: false
+  tpu_cores: null
+  ipus: null
+  log_gpu_memory: null
+  progress_bar_refresh_rate: null
+  enable_progress_bar: true
+  overfit_batches: 0.0
+  track_grad_norm: -1
+  check_val_every_n_epoch: 1
+  fast_dev_run: false
+  accumulate_grad_batches: null
+  max_epochs: 100
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  val_check_interval: null
+  flush_logs_every_n_steps: null
+  log_every_n_steps: 50
+  accelerator: auto
+  strategy: null
+  sync_batchnorm: false
+  precision: 32
+  enable_model_summary: true
+  weights_summary: top
+  weights_save_path: null
+  num_sanity_val_steps: 2
+  resume_from_checkpoint: null
+  profiler: null
+  benchmark: null
+  deterministic: null
+  reload_dataloaders_every_n_epochs: 0
+  auto_lr_find: false
+  replace_sampler_ddp: true
+  detect_anomaly: false
+  auto_scale_batch_size: false
+  prepare_data_per_node: null
+  plugins: null
+  amp_backend: native
+  amp_level: null
+  move_metrics_to_cpu: false
+  multiple_trainloader_mode: min_cycle
+  stochastic_weight_avg: false
+  terminate_on_nan: null
+# ckpt_path: null

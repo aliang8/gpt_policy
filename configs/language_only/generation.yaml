@@ -1,0 +1,26 @@
+decoding: greedy
+num_return_sequences: 3
+max_length: 100
+temperature: 0.7
+
+inference:
+  greedy: 
+    max_length: ${max_length}
+    num_return_sequences: 1
+  beam:
+    max_length: ${max_length}
+    num_beams: 5
+    num_return_sequences: ${num_return_sequences}
+  top_k:
+    do_sample: True
+    top_k: 50
+    temperature: ${temperature}
+    num_return_sequences: ${num_return_sequences}
+  nucleus:
+    do_sample: True 
+    top_p: 0.1
+    top_k: 50
+    temperature: ${temperature}
+    num_return_sequences: ${num_return_sequences}
+
+decode_params: ${inference[${decoding}]}

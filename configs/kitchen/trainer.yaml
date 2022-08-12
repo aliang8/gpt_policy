@@ -1,0 +1,12 @@
+logger: 
+  - _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: /data/anthony/gpt_transformer/logs
+    name: binary_tok_paired_lang_log_val
+  - _target_: pytorch_lightning.loggers.WandbLogger
+    save_dir: ${logger[0].save_dir}
+    name: ${logger[0].name}
+    entity: clvr
+    project: gpt_lang_transformer
+  
+# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/binary_tok_paired_lang_log_val/binary_tok_paired_lang_log_val-epoch=92-step=75330.ckpt
+# max_epochs: 200

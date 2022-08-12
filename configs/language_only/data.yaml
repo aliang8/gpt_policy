@@ -1,0 +1,32 @@
+_target_: data.kitchen.LanguageBehaviorDataModule
+data_conf: 
+  data_dir: /data/anthony/kitchen/single_ann
+  split:
+    train: 0.8
+    val: 0.2
+  modalities:
+    - language
+
+  language_datasets: 
+    - data.language.WikiHowDataset
+    - data.language.LanguageDataset
+
+  language_dataset_cls: # target is provided in the code
+    hparams: 
+      data_dir: ${data_conf.data_dir} 
+      vocab_file: kitchen.vocab
+      mapping_file: text_to_emb.pkl
+      annotation_file: annotations.json
+      language_skills_file: skills_small.txt
+      chunk_size: 512
+      decoder_model_cls: gpt2
+      
+      # wikihow specific
+      wikihow_data_dir: /data/anthony/wikihow 
+      wikihow_data_file: combined_text.txt
+
+  dataloader_cls:
+    _target_: data.sampler.RepeatedDataLoader
+    n_repeat: 10
+    num_workers: 4
+    batch_size: 8
