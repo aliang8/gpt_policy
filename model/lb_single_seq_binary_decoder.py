@@ -9,11 +9,16 @@ from transformers import (
     GPT2Config,
     EncoderDecoderConfig,
 )
+from utils.pytorch_utils import ten2ar
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead, BertOnlyNSPHead
 
-
+from sklearn.metrics import (
+    precision_recall_fscore_support,
+    classification_report,
+    accuracy_score,
+)
 import more_itertools as mit
 import torch.nn as nn
 from transformers import AutoTokenizer
@@ -97,7 +102,21 @@ class Model(pl.LightningModule):
 
         # do we predict language or action next?
         self.binary_predictor = nn.Linear(self.embed_dim, 1)
-        self.binary_prediction_loss_fn = torch.nn.BCELoss(reduction="none")
+
+        # self.binary_prediction_loss_fn = torch.nn.BCEWithLogitsLoss(
+        #     reduction="none", pos_weight=torch.tensor(500)
+        # )
+        if self.hparams.get("binary_pos_weight", None):
+            self.binary_prediction_loss_fn = torch.nn.BCEWithLogitsLoss(
+                reduction="none",
+                pos_weight=torch.tensor(self.hparams.binary_pos_weight),
+            )
+        else:
+            self.binary_prediction_loss_fn = torch.nn.BCEWithLogitsLoss(
+                reduction="none"
+            )
+
+        # self.binary_prediction_loss_fn = torch.nn.BCELoss(reduction="none")
 
     def forward_state_action_lang(
         self,
@@ -228,6 +247,7 @@ class Model(pl.LightningModule):
             action_preds = self.predict_action(model_out[zero_binary_mask])
 
             action_indices = torch.roll(zero_binary_mask, 1, dims=1)
+            action_indices[:, 0] = False
             action_preds_combined[action_indices] = action_preds
 
             # predict action from EOS token
@@ -237,12 +257,13 @@ class Model(pl.LightningModule):
                 lang_act_preds = self.predict_action(eos_token_out)
 
                 action_post_eos = torch.roll(eos_token_mask, 1, dims=1)
-                action_post_eos[:, 0] = 0
+                action_post_eos[:, 0] = False
                 action_preds_combined[action_post_eos] = lang_act_preds
 
             # ================ BINARY PREDICTION ================
             # predict binary token based on state embedding
-            aux_pred = torch.sigmoid(self.binary_predictor(state_out))
+            # aux_pred = torch.sigmoid(self.binary_predictor(state_out))
+            aux_pred = self.binary_predictor(state_out)
 
             # make output easy for computing loss
             action_preds_full = torch.zeros(
@@ -326,7 +347,33 @@ class Model(pl.LightningModule):
         aux_pred_loss = aux_pred_loss.mean()
         return aux_pred_loss
 
-    def training_step(self, batch, batch_idx):
+    def _compute_aux_pred_stats(
+        self,
+        aux_values: torch.Tensor,
+        target_aux_values: torch.Tensor,
+        mask: torch.Tensor,
+        phase: str,
+    ):
+        pred_labels = (torch.sigmoid(aux_values) > 0.5).int()
+        pred_labels = ten2ar(pred_labels)
+
+        true_labels = ten2ar(target_aux_values[mask].int())
+
+        acc = accuracy_score(true_labels, pred_labels)
+        report = classification_report(
+            true_labels,
+            pred_labels,
+            output_dict=True,
+            zero_division=0,
+            target_names=[f"{phase}/0", f"{phase}/1"],
+        )
+        # returns precision, recall, and support
+        # precision: tp / (fp + tp)
+        # recall: tp / (fn + tp), we want to maximize recall of positive class
+
+        return acc, report
+
+    def training_step(self, batch, batch_idx, phase="train"):
         losses = {}
         if "language" in batch:
             lang_input = batch["language"]
@@ -346,7 +393,7 @@ class Model(pl.LightningModule):
                 target_lang_tokens=lang_input["input_ids"],
                 lang_token_mask=lang_input["attention_mask"].bool(),
             )
-            losses["lang_only_pred_loss"] = lang_only_pred_loss
+            losses[f"{phase}/lang_only_pred_loss"] = lang_only_pred_loss
 
         if "behavior" in batch:
             behavior_input = batch["behavior"]
@@ -357,7 +404,7 @@ class Model(pl.LightningModule):
                 target_actions=behavior_input["actions"],
                 action_mask=behavior_input["action_mask"].bool(),
             )
-            losses["behavior_only_action_pred_loss"] = action_pred_loss
+            losses[f"{phase}/behavior_only_action_pred_loss"] = action_pred_loss
 
             binary_token_mask = torch.roll(
                 behavior_input["combined_state_mask"], 1, dims=1
@@ -369,7 +416,7 @@ class Model(pl.LightningModule):
                 target_aux_values=behavior_input["tokens"],
                 mask=binary_token_mask,
             )
-            losses["aux_pred_loss"] = aux_pred_loss
+            losses[f"{phase}/aux_pred_loss"] = aux_pred_loss
 
         if "paired" in batch:
             paired_input = batch["paired"]
@@ -382,7 +429,7 @@ class Model(pl.LightningModule):
                 target_actions=paired_input["actions"],
                 action_mask=paired_input["action_mask"].bool(),
             )
-            losses["paired_action_pred_loss"] = action_pred_loss
+            losses[f"{phase}/paired_action_pred_loss"] = action_pred_loss
 
             binary_token_mask = torch.roll(
                 paired_input["combined_state_mask"], 1, dims=1
@@ -394,7 +441,20 @@ class Model(pl.LightningModule):
                 target_aux_values=paired_input["tokens"],
                 mask=binary_token_mask,
             )
-            losses["paired_aux_pred_loss"] = aux_pred_loss
+            losses[f"{phase}/paired_aux_pred_loss"] = aux_pred_loss
+
+            aux_pred_acc, aux_report = self._compute_aux_pred_stats(
+                aux_values=aux_pred,
+                target_aux_values=paired_input["tokens"],
+                mask=binary_token_mask,
+                phase=phase,
+            )
+
+            # log metrics for binary classification
+            self.log_dict(
+                {f"{phase}/binary_pred_acc": aux_pred_acc}, on_step=True, on_epoch=True
+            )
+            self.log_dict(aux_report, on_step=True, on_epoch=True)
 
         if self.hparams.get("train_paired_lang", False):
             lang_pred_loss = self._compute_lang_pred_loss(
@@ -402,7 +462,7 @@ class Model(pl.LightningModule):
                 target_lang_tokens=paired_input["tokens"],
                 lang_token_mask=paired_input["lang_token_mask"].bool(),
             )
-            losses["paired_lang_pred_loss"] = lang_pred_loss
+            losses[f"{phase}/paired_lang_pred_loss"] = lang_pred_loss
 
         self.log_dict(
             losses,
@@ -415,9 +475,9 @@ class Model(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        # loss = self.training_step(batch, batch_idx)
-        # return loss
-        return 0
+        with torch.no_grad():
+            loss = self.training_step(batch, batch_idx, phase="val")
+        return loss
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
@@ -433,135 +493,120 @@ class Model(pl.LightningModule):
     def tokenize(self, text: str = None):
         return self.tokenizer(text, return_tensors="pt")["input_ids"].to(self.device)
 
-    def build_masks(
-        self,
-        states: torch.Tensor = None,
-        actions: torch.Tensor = None,
-        binary_tokens: torch.Tensor = None,
-        lang_token_ids: torch.Tensor = None,
-        token_type_ids: torch.Tensor = None,
-        **kwargs,
-    ):
-        if states is not None and len(states.shape) == 2:
-            states = states.reshape(1, -1, self.state_dim)
-            actions = actions.reshape(1, -1, self.action_dim)
-
-        B = token_type_ids.shape[0]  # usually should be 1
-        if states is not None:
-            state_mask = torch.ones((B, states.shape[1])).to(self.device)
-            action_mask = torch.ones((B, actions.shape[1])).to(self.device)
-        else:
-            state_mask = None
-            action_mask = None
-
-        tokens = torch.zeros_like(token_type_ids, dtype=torch.long)
-        lang_token_mask = token_type_ids.clone()
-
-        if lang_token_ids is not None:
-            # indexing loses a dimension?
-            tokens[lang_token_mask.bool()] = lang_token_ids.squeeze()
-
-        not_lang = ~lang_token_mask.bool()
-
-        combined_state_mask = torch.zeros_like(token_type_ids)
-        indices = not_lang.nonzero()[::3]
-        combined_state_mask[indices[:, 0], indices[:, 1]] = 1
-
-        combined_action_mask = torch.zeros_like(token_type_ids)
-        indices = not_lang.nonzero()[2::3]
-        combined_action_mask[indices[:, 0], indices[:, 1]] = 1
-
-        action_mask[0, -1] = combined_action_mask[0, -1]
-
-        binary_token_mask = torch.roll(combined_state_mask, 1, dims=1)
-        tokens[binary_token_mask.bool()] = binary_tokens.long().squeeze()
-
-        masks = {
-            "state_mask": state_mask,
-            "action_mask": action_mask,
-            "lang_token_mask": lang_token_mask,
-            "tokens": tokens,
-            "combined_state_mask": combined_state_mask,
-            "combined_action_mask": combined_action_mask,
-            "token_type_ids": token_type_ids,
-        }
-
-        # need to truncate so context is only 512 long
-        # for k, mask in masks.items():
-        #     if mask.shape[1] > 512 and k not in ["state_mask", "action_mask"]:
-        #         masks[k] = mask[:, -512:]
-
-        # # update state_mask and action_mask
-        # num_keep = masks["combined_state_mask"].sum().int()
-        # masks["state_mask"] = masks["state_mask"][:, -num_keep:]
-        # masks["action_mask"] = masks["action_mask"][:, -num_keep:]
-        # states = states[:, -num_keep:]
-        # actions = actions[:, -num_keep:]
-        # timesteps = actions[:, -num_keep:]
-        return masks
-
     def get_prompt(
         self,
-        prev_tokens: torch.Tensor = None,
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
-        binary_tokens: torch.Tensor = None,
         timesteps: torch.Tensor = None,
-        lang_token_ids: torch.Tensor = None,
-        token_type_ids: torch.Tensor = None,
         **kwargs,
     ):
         """
         Implements greedy decoding.
         """
-        lang_token_ids = self.tokenize(LANG_BOS_TOKEN)
+        start = self.tokenize(LANG_BOS_TOKEN)
 
         # start with the BOS token
         curr_token = self.tokenizer.vocab[LANG_BOS_TOKEN]
 
-        if token_type_ids is None:
-            token_type_ids = torch.ones((1, 1)).to(self.device)
-        else:
-            token_type_ids = torch.cat(
-                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
-            )
-            all_tokens = torch.cat([prev_tokens, lang_token_ids], dim=-1)
+        kwargs["lang_token_ids"] = torch.cat([kwargs["lang_token_ids"], start], dim=-1)
+
+        kwargs = self.update_masks(kwargs, next_pred="lang")
+        kwargs["tokens"][:, -1] = start
 
         while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
             # build masks
-            masks = self.build_masks(
-                states, actions, binary_tokens, lang_token_ids, token_type_ids
-            )
             _, lang_token_logits, _ = self.forward_state_action_lang(
-                states=states, actions=actions, timesteps=timesteps, **masks
+                states=states, actions=actions, timesteps=timesteps, **kwargs
             )
             next_token = lang_token_logits[:, -1:].argmax(-1)
             curr_token = next_token.item()
 
-            # add next token
-            all_tokens = torch.cat([all_tokens, next_token], dim=-1)
-            lang_token_ids = torch.cat([lang_token_ids, next_token], dim=-1)
+            kwargs = self.update_masks(kwargs, next_pred="lang")
+            kwargs["tokens"][:, -1] = next_token
 
-            token_type_ids = torch.cat(
-                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
+            # add next token
+            kwargs["lang_token_ids"] = torch.cat(
+                [kwargs["lang_token_ids"], next_token], dim=-1
             )
 
         # decode
         prompt_str = self.tokenizer.decode(
-            token_ids=lang_token_ids[0],
+            token_ids=kwargs["lang_token_ids"][0],
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         ).strip()
-        return prompt_str, all_tokens, lang_token_ids, token_type_ids
+        return prompt_str, kwargs
+
+    def update_masks(self, masks, next_pred="binary"):
+        mask_keys = [
+            "combined_state_mask",
+            "combined_action_mask",
+            "lang_token_mask",
+            "token_type_ids",
+            "tokens",
+        ]
+
+        if next_pred == "binary":
+            extras = torch.zeros((1, 2)).to(self.device)
+            affected = ["combined_state_mask"]
+        elif next_pred == "action":
+            extras = torch.zeros((1, 1)).to(self.device)
+            affected = ["combined_action_mask"]
+        elif next_pred == "lang":
+            extras = torch.zeros((1, 1)).to(self.device)
+            affected = ["lang_token_mask", "token_type_ids"]
+
+        unaffected = list(set(mask_keys) - set(affected))
+        for mask_k in unaffected:
+            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
+
+        # add one for state and one for binary token
+        if next_pred == "binary":
+            extras[:, 0] = 1
+        else:
+            extras[:, -1] = 1
+        for mask_k in affected:
+            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
+
+        return masks
+
+    def crop_input(
+        self,
+        states: torch.Tensor = None,
+        actions: torch.Tensor = None,
+        timesteps: torch.Tensor = None,
+        **kwargs,
+    ):
+
+        if kwargs["tokens"].shape[-1] < 512:
+            return states, actions, timesteps, kwargs
+
+        # index of next state
+        start_y = torch.where(kwargs["combined_state_mask"][0] == 1)
+        start_y = start_y[0][1]
+
+        # crop all the mask to max size
+        import ipdb
+
+        ipdb.set_trace()
+
+        for k, v in kwargs.items():
+            if k not in ["state_mask", "action_mask"]:
+                kwargs[k] = v[:, start_y:]
+
+        # cut off some states and actions
+        kwargs["state_mask"] = kwargs["state_mask"][:, 1:]
+        kwargs["action_mask"] = kwargs["action_mask"][:, 1:]
+        states = states[:, 1:]
+        actions = actions[:, 1:]
+        timesteps = timesteps[:, 1:]
+        return states, actions, timesteps, kwargs
 
     def get_action(
         self,
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
-        binary_tokens: torch.Tensor = None,
         timesteps: torch.Tensor = None,
-        lang_token_ids: torch.Tensor = None,
-        token_type_ids: torch.Tensor = None,
         **kwargs,
     ):
         """
@@ -582,68 +627,55 @@ class Model(pl.LightningModule):
             states = states.reshape(1, -1, self.state_dim)
             actions = actions.reshape(1, -1, self.action_dim)
 
-        # add one for state and one for binary token
-        sb_token_type_ids = torch.zeros((1, 2)).to(self.device)
-        if token_type_ids is not None:
-            token_type_ids = torch.cat([token_type_ids, sb_token_type_ids], dim=-1)
-        else:
-            token_type_ids = sb_token_type_ids
-
-        masks = self.build_masks(
-            states,
-            actions,
-            binary_tokens,
-            lang_token_ids=lang_token_ids,
-            token_type_ids=token_type_ids,
+        # add 1 for state and 0 for action
+        kwargs["state_mask"] = torch.cat(
+            [kwargs["state_mask"], torch.ones((1, 1)).to(self.device)], dim=-1
         )
+        kwargs["action_mask"] = torch.cat(
+            [kwargs["action_mask"], torch.zeros((1, 1)).to(self.device)], dim=-1
+        )
+
+        # # crop context to 512
+        # states, actions, timesteps, kwargs = self.crop_input(
+        #     states, actions, timesteps, **kwargs
+        # )
+
+        kwargs = self.update_masks(kwargs, next_pred="binary")
 
         # first forward predicts the binary token
         _, _, aux_pred = self.forward_state_action_lang(
             states=states,
             actions=actions,
             timesteps=timesteps,
-            **masks,  # masks contains the tokens
+            **kwargs,  # masks contains the tokens
         )
 
-        binary_tokens[0, -1] = aux_pred[-1].item()
+        # print(torch.sigmoid(aux_pred)[-1].item())
+        thres = 0.5
+        aux_pred = (torch.sigmoid(aux_pred) > thres).int()
 
-        if math.isclose(aux_pred[-1].item(), 1.0, rel_tol=1e-3):
-            # if binary tokens returns 1, then we start language
+        kwargs["tokens"][:, -1] = aux_pred[-1]
+
+        if aux_pred[-1].item() > thres:
             print("Predicting new language...")
-            prompt_str, all_tokens, lang_token_ids, token_type_ids = self.get_prompt(
-                prev_tokens=masks["tokens"],
+
+            prompt_str, kwargs = self.get_prompt(
                 states=states,
                 actions=actions,
-                binary_tokens=binary_tokens,
                 timesteps=timesteps,
-                lang_token_ids=None,
-                token_type_ids=masks["token_type_ids"],
+                **kwargs,
             )
             print(f"new prompt: {prompt_str}")
 
-        # add a token for action prediction
-        token_type_ids = torch.cat(
-            [token_type_ids, torch.zeros(1, 1).to(self.device)], dim=-1
-        )
-        masks = self.build_masks(
-            states,
-            actions,
-            binary_tokens,
-            lang_token_ids=lang_token_ids,
-            token_type_ids=token_type_ids,
-        )
+        kwargs = self.update_masks(kwargs, next_pred="action")
+        kwargs["action_mask"][:, -1] = 1
 
         # predict next action
         action_preds, _, _ = self.forward_state_action_lang(
             states=states,
             actions=actions,
             timesteps=timesteps,
-            **masks,
+            **kwargs,
         )
 
-        return (
-            self.postprocess_action(action_preds),
-            lang_token_ids,
-            token_type_ids,
-            aux_pred,
-        )
+        return self.postprocess_action(action_preds), aux_pred, kwargs

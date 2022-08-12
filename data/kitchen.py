@@ -591,7 +591,8 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
             )
-            loaders["language"] = lang_dl
+            if len(lang_dl) > 0:
+                loaders["language"] = lang_dl
 
         if "behavior" in self.hparams.modalities:
             behavior_dl = instantiate(

@@ -251,36 +251,42 @@ class Rollout:
         binary_tokens = torch.zeros((0, 1), device=device, dtype=torch.float32)
         actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
         timesteps = torch.tensor(0, device=device, dtype=torch.long).reshape(1, 1)
-        lang_token_ids = None
-        token_type_ids = None
+
+        # create masks
+        lang_token_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
+        state_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
+        action_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
+        combined_state_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
+        combined_action_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
+
+        lang_token_ids = torch.zeros((1, 0), device=device, dtype=torch.int)
+        token_type_ids = torch.zeros((1, 0), device=device, dtype=torch.int)
+        tokens = torch.zeros((1, 0), device=device, dtype=torch.int)
+        masks = {
+            "state_mask": state_mask,
+            "action_mask": action_mask,
+            "lang_token_mask": lang_token_mask,
+            "tokens": tokens,
+            "combined_state_mask": combined_state_mask,
+            "combined_action_mask": combined_action_mask,
+            "token_type_ids": token_type_ids,
+            "lang_token_ids": lang_token_ids,
+        }
 
         while not done and self._episode_step < self.config.max_episode_len:
-            # print("step: ", self._episode_step)
-            binary_tokens = torch.cat(
-                [binary_tokens, torch.zeros((1, 1), device=device)], dim=0
-            )
             actions = torch.cat(
                 [actions, torch.zeros((1, action_dim), device=device)], dim=0
             )
 
-            (
-                action,
-                lang_token_ids,
-                token_type_ids,
-                binary_token,
-            ) = self._agent.get_action(
+            action, binary_token, masks = self._agent.get_action(
                 states=states,
                 actions=actions,
-                binary_tokens=binary_tokens,
                 timesteps=timesteps,
-                lang_token_ids=lang_token_ids,
-                token_type_ids=token_type_ids,
+                **masks,
             )
 
             actions[-1] = action
-            binary_tokens[-1] = binary_token[-1]
             action = ten2ar(action.squeeze())
-            binary_token = ten2ar(binary_token.squeeze())
 
             next_obs, reward, done, info = self._env.step(action)
 

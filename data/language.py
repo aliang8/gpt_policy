@@ -48,7 +48,7 @@ class LanguageDataset(BaseDataset):
             self.hparams.data_dir, self.hparams.language_skills_file
         )
         with open(text_file, "r") as f:
-            text = f.read()
+            text = f.read().strip()
         return text
 
     def encode_text(self, text):
@@ -56,7 +56,9 @@ class LanguageDataset(BaseDataset):
         sentences = text.split(". ")
 
         # add bos and eos tokens
-        sentences = [f"{LANG_BOS_TOKEN} {s} {LANG_EOS_TOKEN}" for s in sentences]
+        sentences = [
+            f"{LANG_BOS_TOKEN} {s.strip()} {LANG_EOS_TOKEN}" for s in sentences
+        ]
 
         # tokenize the sentences, don't pad so we can just concatenate them later
         tokens = self.tokenizer(sentences, return_tensors="np")

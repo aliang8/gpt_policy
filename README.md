@@ -42,3 +42,7 @@ TODO:
 [] Discretize action into bins
 
 [] Reformat actions 
+
+[] Debug this some more, is it because the context is too long now? 
+
+[] Encoding alfred states

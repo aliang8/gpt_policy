@@ -19,7 +19,7 @@ Runs eval for different train models across separate GPUs
 """
 
 total_gpu_num = 4
-max_process_per_gpu = 1
+max_process_per_gpu = 2
 used_gpu_list = multiprocessing.Manager().list([0] * total_gpu_num)
 lock = multiprocessing.Lock()
 
@@ -73,9 +73,9 @@ def main():
     base_cfg, all_configs = create_param_grid()
 
     # setup GPU
-    available_gpu_num = 4
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    available_gpu_num = len(os.environ["CUDA_VISIBLE_DEVICES"].split(","))
     assert available_gpu_num <= total_gpu_num
+    print(available_gpu_num)
 
     if "debug" in base_cfg and base_cfg.debug:
         episodes, info = run_eval(all_configs[0])
