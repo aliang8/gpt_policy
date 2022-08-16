@@ -38,11 +38,24 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue trainer.py --config configs/d
 CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue evaluate.py --config configs/decoder.yaml
 ```
 
-TODO: 
-[] Discretize action into bins
+### Installation Instructions 
 
-[] Reformat actions 
+```
+virtualenv -p $(which python3) ./venv
+source ./venv/bin/activate
 
-[] Debug this some more, is it because the context is too long now? 
+# Install dependencies
+pip3 install -r requirements.txt
 
-[] Encoding alfred states
+# Install d4rl
+cd ..
+git clone https://github.com/rail-berkeley/d4rl.git
+cd d4rl
+pip install -e .
+
+pip3 install protobuf==3.19.0
+
+export LD_LIBRARY_PATH=/usr/local/cuda-10.1/lib64
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/anthony/.mujoco/mujoco210/bin
+```

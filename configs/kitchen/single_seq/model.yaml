@@ -1,0 +1,16 @@
+_target_: model.lb_single_seq_decoder.Model 
+model_conf:
+  pred_done: True
+  pred_progress: False
+  binary_pos_weight: 500
+
+  # loss weighting
+  lang_only_pred_loss_weight: 1.0
+
+  behavior_only_action_pred_loss_weight: 1.0
+  aux_pred_loss_weight: 1.0
+
+  paired_aux_pred_loss_weight: 1.0
+  paired_lang_pred_loss_weight: 1.0
+  paired_action_pred_loss_weight: 1.0
+

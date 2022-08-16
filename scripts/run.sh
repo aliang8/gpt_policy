@@ -13,11 +13,10 @@ CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue  trainer.py \
     model=configs/base/decoder_model.yaml
 
 # Kitchen
-CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
-    trainer=[configs/base/trainer.yaml,configs/kitchen/trainer.yaml] \
-    data=configs/kitchen/data.yaml \
-    model=[configs/base/decoder_model.yaml,configs/kitchen/model.yaml]
-
+CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/kitchen/single_seq/trainer.yaml] \
+    data=configs/kitchen/single_seq/data.yaml \
+    model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]
 
 # Evaluate
 # multi-gpu eval
@@ -45,21 +44,7 @@ python3 -m ipdb -c continue scripts/test_language_gen.py \
     eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml]
 
 # custom
-CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue multi_eval.py \
-    exp_name=[binary_tok_state_only,binary_tok_paired_lang_pos_weight] \
-    sampler.config.num_samples=50 \
-    sampler.config.max_episode_len=280 \
-    eval_config_files=[configs/base/base_eval.yaml] \
-    debug=True
-
-CUDA_VISIBLE_DEVICES=2 python3 -m ipdb -c continue multi_eval.py \
-    exp_name=[binary_tok_state_only,binary_tok_paired_lang_pos_weight] \
-    sampler.config.num_samples=5 \
-    sampler.config.max_episode_len=280 \
-    eval_config_files=[configs/base/base_eval.yaml]
-
-CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue scripts/test_language_gen.py \
-    exp_name=[binary_tok_paired_lang_log_val/] \
-    sampler.config.num_samples=1 \
-    generation.decoding=greedy \
-    eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml]
+CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/kitchen/single_seq/trainer.yaml] \
+    data=configs/kitchen/single_seq/data.yaml \
+    model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]

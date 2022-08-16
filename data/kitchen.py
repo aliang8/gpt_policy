@@ -6,6 +6,7 @@ import math
 import json
 import torch
 import numpy as np
+import logging
 from itertools import starmap
 import pytorch_lightning as pl
 from torch.utils.data import random_split, DataLoader, Dataset
@@ -19,7 +20,7 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-from data.dataset import BaseDataset, SingleSequenceDataset, SingleSequenceBinaryDataset
+from data.dataset import BaseDataset, SingleSequenceDataset, SingleSequenceDatasetV2, SingleSequenceBinaryDataset
 from torch.utils.data import ConcatDataset
 
 
@@ -61,13 +62,6 @@ class KitchenDataset(BaseDataset):
         self.dataset_stats = self._compute_dataset_stats()
         self._add_skill_info()
 
-        if self.hparams.load_lang:
-            self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
-            self.skill_to_token_map = self._get_lang_tokens()
-
-            self._add_language_annotations()
-            # self._add_masks()
-
         del self.sequences[508]  # too long for the model
 
         self.data = self.sequences
@@ -75,6 +69,10 @@ class KitchenDataset(BaseDataset):
         # bin actions for each dimension
         if self.hparams.discretize_actions:
             self._discretize_actions()
+
+        if self.hparams.load_lang:
+            self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
+            self.skill_to_token_map = self._get_lang_tokens()
 
     def _compute_dataset_stats(self):
         # find the max and min action value for each dim
@@ -340,7 +338,6 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         Split each sequence into individual semantic skills.
         Also add skill progress for training a done predictor.
         """
-
         all_semantic_seqs = []
 
         for seq in self.sequences:
@@ -357,17 +354,17 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
                 semantic_seq = self._split_seq(seq, start, end + 1)
                 semantic_seq.actions = semantic_seq.actions  # TODO: remove action by 1
                 semantic_seq.padding_mask = np.ones((len(semantic_seq.states)))
+
+                if self.hparams.load_lang:
+                    skill = self.OBJS[int(semantic_seq.skills[0])]
+                    semantic_seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
+                    semantic_seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
                 semantic_seqs.append(semantic_seq)
                 start = end + 1
 
             all_semantic_seqs.extend(semantic_seqs)
+            
         return all_semantic_seqs
-
-    def _add_language_annotations(self):
-        for _, seq in enumerate(self.sequences):
-            skill = self.OBJS[int(seq.skills[0])]
-            seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
-            seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
 
     # def collate_fn(self, data):
     #     # custom collate fn for pad on the fly and sorted examples
@@ -412,6 +409,11 @@ class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenD
         SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
 
+class KitchenSingleSequenceV2Dataset(SingleSequenceDatasetV2, SemanticSkillsKitchenDataset):
+    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
+        self.hparams = hparams
+        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
 
 class KitchenSingleSequenceBinaryDataset(
     SingleSequenceBinaryDataset, SemanticSkillsKitchenDataset
@@ -433,6 +435,9 @@ class KitchenDataModule(pl.LightningDataModule):
 
         # saves parameters into hparams attribute
         self.save_hyperparameters(data_conf)
+
+        self.logger = logging.getLogger('data')
+        self.logger.setLevel(logging.DEBUG)
 
     def prepare_data(self):
         env = gym.make(self.hparams.env_name)
@@ -528,6 +533,8 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 self.lang_train, self.lang_val = random_split(
                     self.lang_dataset, [num_tr, num_val]
                 )
+                self.logger.info(f'Language dataset train size: {num_tr}')
+                self.logger.info(f'Language dataset val size: {num_val}')
 
             if "paired" in self.hparams.modalities:
                 num_tr, num_val = self.split_tr_and_val(self.paired_dataset)
@@ -535,11 +542,17 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                     self.paired_dataset, [num_tr, num_val]
                 )
 
+                self.logger.info(f'Paired dataset train size: {num_tr}')
+                self.logger.info(f'Paired dataset val size: {num_val}')
+
             if "behavior" in self.hparams.modalities:
                 num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
                 self.behavior_train, self.behavior_val = random_split(
                     self.behavior_dataset, [num_tr, num_val]
                 )
+
+                self.logger.info(f'Behavior dataset train size: {num_tr}')
+                self.logger.info(f'Behavior dataset val size: {num_val}')
 
     def train_dataloader(self):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])

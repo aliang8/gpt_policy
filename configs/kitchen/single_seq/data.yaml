@@ -5,7 +5,7 @@ data_conf:
     train: 0.8
     val: 0.2
   batch_size: 4
-  data_dir: /data/anthony/kitchen/single_ann
+  data_dir: /home/anthony/gpt_policy/data/kitchen
   state_dim: 60
   action_dim: 9
   modalities:
@@ -14,7 +14,7 @@ data_conf:
     - language
 
   dataset_cls: # config for the dataset
-    _target_: data.kitchen.KitchenSingleSequenceBinaryDataset
+    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
     hparams:
       load_frac_done: True
       load_lang: True
@@ -29,7 +29,7 @@ data_conf:
       chunk_size: 512
   
   behavior_dataset_cls: 
-    _target_: data.kitchen.KitchenSingleSequenceBinaryDataset
+    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
     hparams: 
       load_frac_done: True
       load_lang: False
@@ -61,4 +61,4 @@ data_conf:
     _target_: data.sampler.RepeatedDataLoader
     n_repeat: 10
     num_workers: 4
-    batch_size: 8
+    batch_size: 6

@@ -3,7 +3,7 @@ import numpy as np
 from torch.utils.data import random_split, DataLoader, Dataset
 from typing import Optional, Dict, List, Any
 from torch.utils.data.dataloader import default_collate
-
+from utils.lang_utils import get_tokenizer
 
 class BaseDataset(Dataset):
     def get_sampler(self, indices):
@@ -204,6 +204,92 @@ class SingleSequenceDataset(BaseDataset):
     def __getitem__(self, idx):
         return self.chunks[idx]
 
+class SingleSequenceDatasetV2(SingleSequenceDataset):
+    def _tokenize_and_concatenate_sequence(self):
+        """
+        Combine every state/action/language into a long sequence
+        e.g. s1 | L1 | a1, s2, a2, s3, a3 ... | s1 | L2 | a1 ...
+        """
+
+        output = {
+            "full_sequence": [],
+            "token_type_ids": [],
+            "state_mask": [],
+            "action_mask": [],
+            "lang_token_mask": [],
+            "all_states": [],
+            "all_actions": [],
+            "all_dones": [],
+            "all_timesteps": [],
+        }
+
+        start = 0
+
+        for seq in self.semantic_seqs:
+            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
+
+            # ignore pads
+            if self.hparams.load_lang:
+                lang_tokens, lang_attn = (
+                    seq["lang_token_ids"],
+                    seq["lang_attention_mask"],
+                )
+                num_lang_tokens = sum(lang_attn)
+            else:
+                num_lang_tokens = 0
+
+            output["all_states"].append(states)
+            output["all_actions"].append(actions)
+            output["all_timesteps"].append(timesteps)
+
+            if "done" in seq:
+                output["all_dones"].append(seq.done)
+
+            T = actions.shape[0]
+            # states - T, actions - T
+            total_num_tokens = 2 * T + num_lang_tokens
+
+            concat_sequence = np.zeros((total_num_tokens))
+            lang_token_mask_ = np.zeros((total_num_tokens))
+            action_mask_ = np.zeros((total_num_tokens))
+            state_mask_ = np.zeros((total_num_tokens))
+
+            # s1 | L1 | a1 ....
+            state_mask_[0] = 1
+            concat_sequence[0] = 0
+
+            state_r = slice(1 + num_lang_tokens + 1, total_num_tokens, 2)
+            action_r = slice(1 + num_lang_tokens, total_num_tokens, 2)
+
+            state_mask_[state_r] = 1
+            action_mask_[action_r] = 1
+
+            # temporary put filler tokens for the state so
+            # that we can extract the actual states when chunking
+            concat_sequence[state_r] = np.arange(start + 1, start + T)
+            concat_sequence[action_r] = np.arange(start, start + T)
+
+            # insert the language tokens into the sequence
+            if self.hparams.load_lang:
+                lang_r = slice(1, num_lang_tokens + 1)
+                lang_token_mask_[lang_r] = 1
+                concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
+
+            # add to list
+            token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
+            output["full_sequence"].append(concat_sequence)
+            output["token_type_ids"].append(token_type_id)
+            output["state_mask"].append(state_mask_)
+            output["action_mask"].append(action_mask_)
+            output["lang_token_mask"].append(lang_token_mask_)
+
+            start += T
+
+        for k, v in output.items():
+            if len(v) > 0:
+                output[k] = np.concatenate(v)
+
+        return output
 
 class SingleSequenceBinaryDataset(SingleSequenceDataset):
     def _tokenize_and_concatenate_sequence(self):
@@ -261,9 +347,7 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
             state_mask_[0] = 1
             concat_sequence[0] = 0
             if num_lang_tokens > 0:
-                concat_sequence[
-                    1
-                ] = 1  # mark the binary token before the first language
+                concat_sequence[1] = 1  # mark the binary token before the first language
             state_r = slice(2 + num_lang_tokens + 1, total_num_tokens, 3)
             action_r = slice(2 + num_lang_tokens, total_num_tokens, 3)
 

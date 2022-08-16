@@ -2,3 +2,10 @@ wandb/
 config.yaml
 *.pyc
 __pycache__/
+experiments/*
+venv/*
+slurm_output/*
+.cache/
+.d4rl/
+.mujoco/
+.netrc

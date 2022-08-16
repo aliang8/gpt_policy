@@ -1,0 +1,11 @@
+{
+	"skill_to_lang_ann_map": {
+		"microwave": ["open the microwave"],
+		"kettle": ["move the kettle"],
+		"light switch": ["toggle the light switch"],
+		"slide cabinet": ["open the sliding cabinet"],
+		"hinge cabinet": ["open the hinge cabinet"],
+		"bottom burner": ["toggle the bottom burner"],
+		"top burner": ["toggle the top burner"]
+	}
+}

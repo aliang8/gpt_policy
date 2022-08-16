@@ -1,0 +1,27 @@
+#!/bin/bash 
+#SBATCH --job-name=train_gpt_policy
+#SBATCH --partition=debug
+#SBATCH --nodes=1
+#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=10
+#SBATCH --gpus-per-node=2080:1
+#SBATCH --nodelist=ink-gary
+#SBATCH --output=/home/anthony/gpt_policy/slurm_output/%j.out
+
+HOME=/home/anthony/gpt_policy
+
+# conda activate teach
+cd /home/anthony/gpt_policy
+source venv/bin/activate 
+
+wandb login 0815350e6c514d36864729063abb10fc03898c00
+export LD_LIBRARY_PATH=/usr/local/cuda-10.1/lib64
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/anthony/.mujoco/mujoco210/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/anthony/gpt_policy/.mujoco/mujoco210/bin
+export TOKENIZERS_PARALLELISM=false 
+
+CUDA_VISIBLE_DEVICES=0 python3 trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/kitchen/single_seq/trainer.yaml] \
+    data=configs/kitchen/single_seq/data.yaml \
+    model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]
