@@ -3,7 +3,7 @@ import itertools
 import d4rl
 
 from collections import defaultdict
-from core.rl.components.environment import GymEnv
+from .base import GymEnv
 
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 

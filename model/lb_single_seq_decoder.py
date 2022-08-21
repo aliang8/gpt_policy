@@ -34,16 +34,16 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 class Model(pl.LightningModule):
     """
     Implementation of transformer decoder model that can consume both language
-    and behavior. States predict a binary token which determines whether we 
+    and behavior. States predict a binary token which determines whether we
     predict language next or actions next. The binary prediction is implemented
     as a separate head while predicting the action.
 
                                                   <0>     <0>
     <1> Open  the  microwave  <EOS>               a2      a3
-    |    |     |      |         |                 |       |    
+    |    |     |      |         |                 |       |
     ================================ Transformer ================================
-    |    |     |      |         |       |         |   |   |   |      
-    s1 <BOS>  Open  the      microwave <EOS>      s2  a2  s3  a3 
+    |    |     |      |         |       |         |   |   |   |
+    s1 <BOS>  Open  the      microwave <EOS>      s2  a2  s3  a3
 
 
     Model is an autoregressive decoder model.
@@ -88,7 +88,9 @@ class Model(pl.LightningModule):
         # self.wte = self.model.wte = self.model.resize_token_embeddings(
         #     len(self.tokenizer)
         # )
-        self.model.transformer.wte = self.model.resize_token_embeddings(len(self.tokenizer))
+        self.model.transformer.wte = self.model.resize_token_embeddings(
+            len(self.tokenizer)
+        )
 
         self.state_dim = self.hparams.state_dim
         self.action_dim = self.hparams.action_dim
@@ -133,15 +135,16 @@ class Model(pl.LightningModule):
 
         # predicts a float value between 0 and 1
         if self.hparams.get("pred_progress", False):
-            self.aux_pred = nn.Sequential(
-                nn.Linear(self.embed_dim, 1), nn.Tanh()
-            )
+            self.aux_pred = nn.Sequential(nn.Linear(self.embed_dim, 1), nn.Tanh())
             self.aux_pred_loss_fn = torch.nn.MSELoss()
         elif self.hparams.get("pred_done", False):
             # don't need sigmoid because we are doing BCEWithLogits
             self.aux_pred = nn.Linear(self.embed_dim, 1)
             if self.hparams.get("binary_pos_weight", None):
-                self.aux_pred_loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none", pos_weight=torch.tensor(self.hparams.binary_pos_weight))
+                self.aux_pred_loss_fn = torch.nn.BCEWithLogitsLoss(
+                    reduction="none",
+                    pos_weight=torch.tensor(self.hparams.binary_pos_weight),
+                )
             else:
                 self.aux_pred_loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
 
@@ -213,11 +216,13 @@ class Model(pl.LightningModule):
             timestep_embeddings = self.embed_timestep(timesteps.int())
 
             state_embeddings = state_embeddings + timestep_embeddings
-            action_embeddings = action_embeddings + timestep_embeddings
+            action_embeddings = (
+                action_embeddings + timestep_embeddings[: action_embeddings.shape[0]]
+            )
             state_action_lang[combined_state_mask] = state_embeddings
             state_action_lang[combined_action_mask] = action_embeddings
 
-            attention_mask |= (combined_state_mask | combined_action_mask)
+            attention_mask |= combined_state_mask | combined_action_mask
 
         if lang_token_mask.sum() != 0:
             lang_token_ids = tokens[lang_token_mask]
@@ -259,6 +264,9 @@ class Model(pl.LightningModule):
 
             state_out = model_out[combined_state_mask & ~states_before_bos]
 
+            if not self.training and combined_state_mask[:, -1]:
+                state_out = state_out[:-1]
+
             # use previous states to predict actions
             action_preds = self.predict_action(state_out)
 
@@ -274,11 +282,12 @@ class Model(pl.LightningModule):
 
                 action_post_eos = torch.roll(eos_token_mask, 1, dims=1)
                 action_post_eos[:, 0] = False
+                action_preds_combined[
+                    combined_action_mask & ~action_post_eos
+                ] = action_preds
                 action_preds_combined[action_post_eos] = lang_act_preds
-                action_preds_combined[combined_action_mask & ~action_post_eos] = action_preds
             else:
-                action_preds_combined = action_preds
-
+                action_preds_combined[combined_action_mask] = action_preds
 
             # make output easy for computing loss
             action_preds_full = torch.zeros(
@@ -452,21 +461,23 @@ class Model(pl.LightningModule):
             )
             losses["paired_action_pred_loss"] = action_pred_loss
 
-            bos_token_mask = (paired_input['tokens'] == 50261) & paired_input['lang_token_mask'].bool()
+            bos_token_mask = (paired_input["tokens"] == 50261) & paired_input[
+                "lang_token_mask"
+            ].bool()
             states_before_eos = torch.roll(bos_token_mask, -1, dims=1)
             states_before_eos[:, -1] = 0
 
             aux_pred_loss = self._compute_aux_pred_loss(
                 aux_values=aux_pred,
                 target_aux_values=states_before_eos.float(),
-                mask=paired_input['combined_state_mask'].bool(),
+                mask=paired_input["combined_state_mask"].bool(),
             )
             losses["paired_aux_pred_loss"] = aux_pred_loss
 
             aux_pred_acc, aux_report = self._compute_aux_pred_stats(
                 aux_values=aux_pred,
                 target_aux_values=states_before_eos.float(),
-                mask=paired_input['combined_state_mask'].bool(),
+                mask=paired_input["combined_state_mask"].bool(),
                 phase=phase,
             )
 
@@ -485,7 +496,9 @@ class Model(pl.LightningModule):
             losses["paired_lang_pred_loss"] = lang_pred_loss
 
         # add prefix to losses and multiply by weight
-        losses_with_prefix = {f'{phase}/{k}': v* self.hparams[f"{k}_weight"] for k, v in losses.items()}
+        losses_with_prefix = {
+            f"{phase}/{k}": v * self.hparams[f"{k}_weight"] for k, v in losses.items()
+        }
 
         self.log_dict(
             losses_with_prefix,
@@ -521,51 +534,45 @@ class Model(pl.LightningModule):
         self,
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
-        lang_token_ids: torch.Tensor = None,
-        token_type_ids: torch.Tensor = None,
+        timesteps: torch.Tensor = None,
         **kwargs,
     ):
         """
         Implements greedy decoding.
         """
-        tokens = self.tokenize(LANG_BOS_TOKEN)
-        new_tokens = tokens.clone()
+        start = self.tokenize(LANG_BOS_TOKEN)
 
         # start with the BOS token
         curr_token = self.tokenizer.vocab[LANG_BOS_TOKEN]
 
-        if token_type_ids is None:
-            token_type_ids = torch.ones((1, 1)).to(self.device)
-        else:
-            token_type_ids = torch.cat(
-                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
-            )
-            tokens = torch.cat([lang_token_ids, tokens], dim=-1)
+        kwargs["lang_token_ids"] = torch.cat([kwargs["lang_token_ids"], start], dim=-1)
+
+        kwargs = self.update_masks(kwargs, next_pred="lang")
+        kwargs["tokens"][:, -1] = start
 
         while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
             # build masks
-            masks = self.build_masks(states, actions, tokens, token_type_ids)
             _, lang_token_logits, _ = self.forward_state_action_lang(
-                states=states, actions=actions, **masks
+                states=states, actions=actions, timesteps=timesteps, **kwargs
             )
             next_token = lang_token_logits[:, -1:].argmax(-1)
             curr_token = next_token.item()
 
-            # add next token
-            tokens = torch.cat([tokens, next_token], dim=-1)
-            new_tokens = torch.cat([new_tokens, next_token], dim=-1)
+            kwargs = self.update_masks(kwargs, next_pred="lang")
+            kwargs["tokens"][:, -1] = next_token
 
-            token_type_ids = torch.cat(
-                [token_type_ids, torch.ones((1, 1)).to(self.device)], dim=-1
+            # add next token
+            kwargs["lang_token_ids"] = torch.cat(
+                [kwargs["lang_token_ids"], next_token], dim=-1
             )
 
         # decode
         prompt_str = self.tokenizer.decode(
-            token_ids=tokens[0],
+            token_ids=kwargs["lang_token_ids"][0],
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         ).strip()
-        return prompt_str, new_tokens, tokens, token_type_ids
+        return prompt_str, kwargs
 
     def update_masks(self, masks, next_pred="binary"):
         mask_keys = [
@@ -576,27 +583,35 @@ class Model(pl.LightningModule):
             "tokens",
         ]
 
+        zeros = torch.zeros((1, 1)).to(self.device)
+        ones = torch.ones((1, 1)).to(self.device)
+
+        # if we predict binary token next
+        # pad every mask and add a 1 for the state mask
+
         if next_pred == "binary":
-            extras = torch.zeros((1, 2)).to(self.device)
             affected = ["combined_state_mask"]
+
+        # if we predict action next
+        # pad every mask and add 1 for the action mask
+
         elif next_pred == "action":
-            extras = torch.zeros((1, 1)).to(self.device)
             affected = ["combined_action_mask"]
+
+        # if we predict lang next
+        # pad every mask and add 1 for lang_token_mask and token_type_ids
+
         elif next_pred == "lang":
-            extras = torch.zeros((1, 1)).to(self.device)
             affected = ["lang_token_mask", "token_type_ids"]
 
+        # pad all unaffected masks
         unaffected = list(set(mask_keys) - set(affected))
         for mask_k in unaffected:
-            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
+            masks[mask_k] = torch.cat([masks[mask_k], zeros], dim=-1)
 
-        # add one for state and one for binary token
-        if next_pred == "binary":
-            extras[:, 0] = 1
-        else:
-            extras[:, -1] = 1
+        # for all affected masks, add 1
         for mask_k in affected:
-            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
+            masks[mask_k] = torch.cat([masks[mask_k], ones], dim=-1)
 
         return masks
 
@@ -605,8 +620,6 @@ class Model(pl.LightningModule):
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
         timesteps: torch.Tensor = None,
-        lang_token_ids: torch.Tensor = None,
-        token_type_ids: torch.Tensor = None,
         **kwargs,
     ):
         """
@@ -627,31 +640,47 @@ class Model(pl.LightningModule):
             states = states.reshape(1, -1, self.state_dim)
             actions = actions.reshape(1, -1, self.action_dim)
 
-        # add one for state and one for action
-        sa_token_type_ids = torch.zeros((1, 2)).to(self.device)
-        if token_type_ids is not None:
-            token_type_ids = torch.cat([token_type_ids, sa_token_type_ids], dim=-1)
-        else:
-            token_type_ids = sa_token_type_ids
-
-        masks = self.build_masks(
-            states,
-            actions,
-            lang_token_ids=lang_token_ids,
-            token_type_ids=token_type_ids,
+        # add 1 for state and 0 for action
+        kwargs["state_mask"] = torch.cat(
+            [kwargs["state_mask"], torch.ones((1, 1)).to(self.device)], dim=-1
+        )
+        kwargs["action_mask"] = torch.cat(
+            [kwargs["action_mask"], torch.zeros((1, 1)).to(self.device)], dim=-1
         )
 
-        # predicts actions and progress
-        action_preds, _, aux_pred = self.forward_state_action_lang(
+        kwargs = self.update_masks(kwargs, next_pred="binary")
+
+        # first forward predicts the binary token
+        _, _, aux_pred = self.forward_state_action_lang(
             states=states,
             actions=actions,
             timesteps=timesteps,
-            **masks,
+            **kwargs,  # masks contains the tokens
         )
 
-        return (
-            self.postprocess_action(action_preds),
-            lang_token_ids,
-            token_type_ids,
-            aux_pred,
+        info = torch.sigmoid(aux_pred)[-1]
+        aux_pred = (torch.sigmoid(aux_pred) > 0.5).int()
+
+        if aux_pred[-1]:
+            print("Predicting new language...")
+
+            prompt_str, kwargs = self.get_prompt(
+                states=states,
+                actions=actions,
+                timesteps=timesteps,
+                **kwargs,
+            )
+            print(f"new prompt: {prompt_str}")
+
+        kwargs = self.update_masks(kwargs, next_pred="action")
+        kwargs["action_mask"][:, -1] = 1
+
+        # predict next action
+        action_preds, _, _ = self.forward_state_action_lang(
+            states=states,
+            actions=actions,
+            timesteps=timesteps,
+            **kwargs,
         )
+
+        return self.postprocess_action(action_preds), aux_pred, kwargs, info

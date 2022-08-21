@@ -27,3 +27,8 @@ wandb
 # mpi4py
 transformers
 pytorch-lightning
+
+black
+pylint
+
+ai2thor

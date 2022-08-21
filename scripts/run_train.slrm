@@ -4,8 +4,8 @@
 #SBATCH --nodes=1
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=10
-#SBATCH --gpus-per-node=2080:1
-#SBATCH --nodelist=ink-gary
+#SBATCH --gpus-per-node=6000:1
+#SBATCH --nodelist=ink-titan
 #SBATCH --output=/home/anthony/gpt_policy/slurm_output/%j.out
 
 HOME=/home/anthony/gpt_policy

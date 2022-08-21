@@ -5,6 +5,7 @@ import random
 from enum import Enum
 import numpy as np
 from data.dataset import BaseDataset, SingleSequenceDataset
+from data.alfred_utils.object_encoder import encode_object
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from utils.lang_utils import get_tokenizer
 from typing import Optional, Dict, List, Any
@@ -12,7 +13,7 @@ from typing import Optional, Dict, List, Any
 # from ai2thor.interact import DefaultActions
 import sys
 
-sys.path.append("/data/anthony/alfred")
+sys.path.append("/home/anthony/alfred")
 import gen.constants as constants
 
 
@@ -65,6 +66,9 @@ class ALFREDSingleSequenceDataset(SingleSequenceDataset):
 
             traj_data_f = os.path.join(task, "traj_data.json")
             traj_data = json.load(open(traj_data_f, "r"))
+
+            traj_metadata_f = os.path.join(task, "traj_metadata.pkl")
+            traj_data['metadata'] = json.load(open(traj_metadata_f, "r"))
             data.append(traj_data)
             # keys: images, pddl_params, plan, scene, task_id, task_type, turk_annotations
 
@@ -117,6 +121,7 @@ class ALFREDSingleSequenceDataset(SingleSequenceDataset):
                     interact_obj=np.array(obj_ids[idx]),
                     lang_token_ids=tokens["input_ids"][idx],
                     lang_attention_mask=tokens["attention_mask"][idx],
+                    timesteps=np.arange(len(action_ids[idx])),
                 )
                 semantic_sequences.append(sequence)
         return semantic_sequences
@@ -125,11 +130,14 @@ class ALFREDSingleSequenceDataset(SingleSequenceDataset):
 if __name__ == "__main__":
 
     hparams = AttrDict(
-        alfred_data_dir="/data/anthony/alfred/data/json_2.1.0",
+        alfred_data_dir="/home/anthony/alfred/data/json_2.1.0",
         decoder_model_cls="gpt2",
         load_lang=True,
         chunk_size=512,
     )
     dataset = ALFREDSingleSequenceDataset(hparams=hparams, split="valid_seen")
 
+    import ipdb
+
+    ipdb.set_trace()
     print(len(dataset))

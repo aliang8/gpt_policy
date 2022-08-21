@@ -33,18 +33,19 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
 from model.lb_single_seq_decoder import Model as SingleSeqDecoderModel
 
+
 @MODEL_REGISTRY
 class Model(SingleSeqDecoderModel):
     """
     Implementation of transformer decoder model that can consume both language
-    and behavior. States predict a binary token which determines whether we 
+    and behavior. States predict a binary token which determines whether we
     predict language next or actions next.
 
     a1 <BOS>  Open  the  microwave  <EOS>  a1       <0>   a2     <0>   a3
     |    |     |      |    |        |       |        |    |       |    |
     ================================ Transformer ================================
     |    |     |      |    |       |        |        |    |       |    |       |
-    s1  <1>  <BOS>  Open  the  microwave  <EOS>  a1  s2  <0>  a2  s3  <0>  a3  s4 ...  
+    s1  <1>  <BOS>  Open  the  microwave  <EOS>  a1  s2  <0>  a2  s3  <0>  a3  s4 ...
 
 
     Model is an autoregressive decoder model.
@@ -256,49 +257,40 @@ class Model(SingleSeqDecoderModel):
 
         return action_preds_full, lang_token_logits_full, aux_pred
 
-    def get_prompt(
-        self,
-        states: torch.Tensor = None,
-        actions: torch.Tensor = None,
-        timesteps: torch.Tensor = None,
-        **kwargs,
-    ):
-        """
-        Implements greedy decoding.
-        """
-        start = self.tokenize(LANG_BOS_TOKEN)
+    def update_masks(self, masks, next_pred="binary"):
+        mask_keys = [
+            "combined_state_mask",
+            "combined_action_mask",
+            "lang_token_mask",
+            "token_type_ids",
+            "tokens",
+        ]
 
-        # start with the BOS token
-        curr_token = self.tokenizer.vocab[LANG_BOS_TOKEN]
+        # if we predict binary token next
+        # pad every mask and add a 1 for the state mask
+        if next_pred == "binary":
+            extras = torch.zeros((1, 2)).to(self.device)
+            affected = ["combined_state_mask"]
+        elif next_pred == "action":
+            extras = torch.zeros((1, 1)).to(self.device)
+            affected = ["combined_action_mask"]
+        elif next_pred == "lang":
+            extras = torch.zeros((1, 1)).to(self.device)
+            affected = ["lang_token_mask", "token_type_ids"]
 
-        kwargs["lang_token_ids"] = torch.cat([kwargs["lang_token_ids"], start], dim=-1)
+        unaffected = list(set(mask_keys) - set(affected))
+        for mask_k in unaffected:
+            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
 
-        kwargs = self.update_masks(kwargs, next_pred="lang")
-        kwargs["tokens"][:, -1] = start
+        # add one for state and one for binary token
+        if next_pred == "binary":
+            extras[:, 0] = 1
+        else:
+            extras[:, -1] = 1
+        for mask_k in affected:
+            masks[mask_k] = torch.cat([masks[mask_k], extras], dim=-1)
 
-        while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
-            # build masks
-            _, lang_token_logits, _ = self.forward_state_action_lang(
-                states=states, actions=actions, timesteps=timesteps, **kwargs
-            )
-            next_token = lang_token_logits[:, -1:].argmax(-1)
-            curr_token = next_token.item()
-
-            kwargs = self.update_masks(kwargs, next_pred="lang")
-            kwargs["tokens"][:, -1] = next_token
-
-            # add next token
-            kwargs["lang_token_ids"] = torch.cat(
-                [kwargs["lang_token_ids"], next_token], dim=-1
-            )
-
-        # decode
-        prompt_str = self.tokenizer.decode(
-            token_ids=kwargs["lang_token_ids"][0],
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-        ).strip()
-        return prompt_str, kwargs
+        return masks
 
     def crop_input(
         self,

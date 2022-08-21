@@ -1,7 +1,7 @@
 logger: 
   - _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: /home/anthony/gpt_policy/experiments
-    name: predict_binary_separate_head_pos_weight
+    name: test
   - _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: ${logger[0].save_dir}
     name: ${logger[0].name}

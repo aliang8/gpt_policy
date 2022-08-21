@@ -30,12 +30,24 @@ Paired behavior data contains behavioral sequences that are annotated with langu
 
 ### Train the model: 
 ```
-CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue trainer.py --config configs/decoder.yaml
+CUDA_VISIBLE_DEVICES=0 python3 trainer.py --config configs/decoder.yaml
 ```
 
 ### Evaluate the model on new task:
 ```
-CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue evaluate.py --config configs/decoder.yaml
+# runs rollouts 
+python3 multi_eval.py \
+    exp_name=[{EXP_NAME}] \
+    sampler.config.num_samples=50 \
+    sampler.config.max_episode_len=280 \
+    eval_config_files=[configs/base/base_eval.yaml]
+
+# generate videos
+python3 multi_eval.py \
+    exp_name=[{EXP_NAME}] \
+    sampler.config.num_samples=50 \
+    sampler.config.max_episode_len=280 \
+    eval_config_files=[configs/base/base_eval.yaml,configs/custom/video_eval.yaml]
 ```
 
 ### Installation Instructions 
@@ -47,15 +59,33 @@ source ./venv/bin/activate
 # Install dependencies
 pip3 install -r requirements.txt
 
-# Install d4rl
+# Install d4rl, need custom one
 cd ..
-git clone https://github.com/rail-berkeley/d4rl.git
+git clone https://github.com/kpertsch/d4rl.git
 cd d4rl
 pip install -e .
 
 pip3 install protobuf==3.19.0
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python ??
 
+export ALFRED_ROOT=/home/anthony/alfred/
+export PYTHONPATH=$PWD:$PYTHONPATH
 export LD_LIBRARY_PATH=/usr/local/cuda-10.1/lib64
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/.mujoco/mujoco210/bin
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/anthony/.mujoco/mujoco210/bin
+```
+
+### Help
+
+```
+Check python version
+python -c "import torch; print(torch.__version__)"
+
+Check cuda version
+python -c "import torch; print(torch.version.cuda)"
+
+pip install torch-scatter -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+pip install torch-sparse -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+pip install torch-geometric
 ```

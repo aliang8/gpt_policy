@@ -48,3 +48,8 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
     trainer=[configs/base/trainer.yaml,configs/kitchen/single_seq/trainer.yaml] \
     data=configs/kitchen/single_seq/data.yaml \
     model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]
+
+python3 -m ipdb -c continue multi_eval.py \
+    exp_name=[predict_binary_separate_head_no_weighting] \
+    sampler.config.num_samples=10 \
+    eval_config_files=[configs/base/base_eval.yaml]

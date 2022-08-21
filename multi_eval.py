@@ -6,7 +6,6 @@ import glob
 import multiprocessing
 from functools import partial
 
-from model.lb_single_seq_decoder import LB_SingleSeq_Decoder
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks import ModelCheckpoint

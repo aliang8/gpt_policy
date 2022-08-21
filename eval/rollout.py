@@ -1,3 +1,4 @@
+import matplotlib
 import pytorch_lightning as pl
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 
@@ -5,6 +6,7 @@ import os
 import numpy as np
 import torch
 import tqdm
+import matplotlib.pyplot as plt
 from collections import Counter
 from omegaconf import DictConfig
 from envs.base import BaseEnvironment
@@ -273,22 +275,35 @@ class Rollout:
             "lang_token_ids": lang_token_ids,
         }
 
+        # DEBUG
+        sigmoid_vals = []
+        prev_completed_tasks = set()
+        pivot_timesteps = []
+
         while not done and self._episode_step < self.config.max_episode_len:
             actions = torch.cat(
                 [actions, torch.zeros((1, action_dim), device=device)], dim=0
             )
 
-            action, binary_token, masks = self._agent.get_action(
+            action, binary_token, masks, info = self._agent.get_action(
                 states=states,
                 actions=actions,
                 timesteps=timesteps,
                 **masks,
             )
 
+            # DEBUG
+            sigmoid_vals.append(info.item())
+
             actions[-1] = action
             action = ten2ar(action.squeeze())
 
             next_obs, reward, done, info = self._env.step(action)
+
+            if len(prev_completed_tasks) != len(info["completed_tasks"]):
+                pivot_timesteps.append(self._episode_step)
+
+            prev_completed_tasks = info["completed_tasks"]
 
             episode.append(
                 AttrDict(
@@ -324,4 +339,14 @@ class Rollout:
 
         # set last step in episode as done
         episode[-1].done = True
+
+        # DEBUG
+        # add plot for sigmoid values
+        plt.clf()
+        plt.plot(sigmoid_vals[1:])
+        for t in pivot_timesteps:
+            plt.axvline(x=t, color="red")
+        idx = np.random.randint(0, 10000)
+        plt.savefig(f"plots/sigmoid_{idx}.png")
+
         return listdict2dictlist(episode)

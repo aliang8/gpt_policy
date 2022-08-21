@@ -5,6 +5,7 @@ from typing import Optional, Dict, List, Any
 from torch.utils.data.dataloader import default_collate
 from utils.lang_utils import get_tokenizer
 
+
 class BaseDataset(Dataset):
     def get_sampler(self, indices):
         return None  # use default batch sampler
@@ -71,7 +72,6 @@ class SingleSequenceDataset(BaseDataset):
 
         for seq in self.semantic_seqs:
             states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
-
             # ignore pads
             if self.hparams.load_lang:
                 lang_tokens, lang_attn = (
@@ -204,6 +204,7 @@ class SingleSequenceDataset(BaseDataset):
     def __getitem__(self, idx):
         return self.chunks[idx]
 
+
 class SingleSequenceDatasetV2(SingleSequenceDataset):
     def _tokenize_and_concatenate_sequence(self):
         """
@@ -256,7 +257,7 @@ class SingleSequenceDatasetV2(SingleSequenceDataset):
 
             # s1 | L1 | a1 ....
             state_mask_[0] = 1
-            concat_sequence[0] = 0
+            concat_sequence[0] = start
 
             state_r = slice(1 + num_lang_tokens + 1, total_num_tokens, 2)
             action_r = slice(1 + num_lang_tokens, total_num_tokens, 2)
@@ -290,6 +291,7 @@ class SingleSequenceDatasetV2(SingleSequenceDataset):
                 output[k] = np.concatenate(v)
 
         return output
+
 
 class SingleSequenceBinaryDataset(SingleSequenceDataset):
     def _tokenize_and_concatenate_sequence(self):
@@ -347,7 +349,9 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
             state_mask_[0] = 1
             concat_sequence[0] = 0
             if num_lang_tokens > 0:
-                concat_sequence[1] = 1  # mark the binary token before the first language
+                concat_sequence[
+                    1
+                ] = 1  # mark the binary token before the first language
             state_r = slice(2 + num_lang_tokens + 1, total_num_tokens, 3)
             action_r = slice(2 + num_lang_tokens, total_num_tokens, 3)
 

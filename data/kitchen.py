@@ -20,7 +20,12 @@ from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 from dataclasses import dataclass
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-from data.dataset import BaseDataset, SingleSequenceDataset, SingleSequenceDatasetV2, SingleSequenceBinaryDataset
+from data.dataset import (
+    BaseDataset,
+    SingleSequenceDataset,
+    SingleSequenceDatasetV2,
+    SingleSequenceBinaryDataset,
+)
 from torch.utils.data import ConcatDataset
 
 
@@ -357,13 +362,17 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
 
                 if self.hparams.load_lang:
                     skill = self.OBJS[int(semantic_seq.skills[0])]
-                    semantic_seq.lang_token_ids = self.skill_to_token_map[skill]["token_ids"]
-                    semantic_seq.lang_attention_mask = self.skill_to_token_map[skill]["attention_mask"]
+                    semantic_seq.lang_token_ids = self.skill_to_token_map[skill][
+                        "token_ids"
+                    ]
+                    semantic_seq.lang_attention_mask = self.skill_to_token_map[skill][
+                        "attention_mask"
+                    ]
                 semantic_seqs.append(semantic_seq)
                 start = end + 1
 
             all_semantic_seqs.extend(semantic_seqs)
-            
+
         return all_semantic_seqs
 
     # def collate_fn(self, data):
@@ -409,11 +418,15 @@ class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenD
         SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
 
-class KitchenSingleSequenceV2Dataset(SingleSequenceDatasetV2, SemanticSkillsKitchenDataset):
+
+class KitchenSingleSequenceV2Dataset(
+    SingleSequenceDatasetV2, SemanticSkillsKitchenDataset
+):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
         self.hparams = hparams
         SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
         SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
+
 
 class KitchenSingleSequenceBinaryDataset(
     SingleSequenceBinaryDataset, SemanticSkillsKitchenDataset
@@ -436,7 +449,7 @@ class KitchenDataModule(pl.LightningDataModule):
         # saves parameters into hparams attribute
         self.save_hyperparameters(data_conf)
 
-        self.logger = logging.getLogger('data')
+        self.logger = logging.getLogger("data")
         self.logger.setLevel(logging.DEBUG)
 
     def prepare_data(self):
@@ -533,8 +546,8 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                 self.lang_train, self.lang_val = random_split(
                     self.lang_dataset, [num_tr, num_val]
                 )
-                self.logger.info(f'Language dataset train size: {num_tr}')
-                self.logger.info(f'Language dataset val size: {num_val}')
+                self.logger.info(f"Language dataset train size: {num_tr}")
+                self.logger.info(f"Language dataset val size: {num_val}")
 
             if "paired" in self.hparams.modalities:
                 num_tr, num_val = self.split_tr_and_val(self.paired_dataset)
@@ -542,8 +555,8 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                     self.paired_dataset, [num_tr, num_val]
                 )
 
-                self.logger.info(f'Paired dataset train size: {num_tr}')
-                self.logger.info(f'Paired dataset val size: {num_val}')
+                self.logger.info(f"Paired dataset train size: {num_tr}")
+                self.logger.info(f"Paired dataset val size: {num_val}")
 
             if "behavior" in self.hparams.modalities:
                 num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
@@ -551,8 +564,11 @@ class LanguageBehaviorDataModule(KitchenDataModule):
                     self.behavior_dataset, [num_tr, num_val]
                 )
 
-                self.logger.info(f'Behavior dataset train size: {num_tr}')
-                self.logger.info(f'Behavior dataset val size: {num_val}')
+                self.logger.info(f"Behavior dataset train size: {num_tr}")
+                self.logger.info(f"Behavior dataset val size: {num_val}")
+            import ipdb
+
+            ipdb.set_trace()
 
     def train_dataloader(self):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])
