@@ -43,8 +43,34 @@ class BaseDataset(Dataset):
         """
         return
 
+    def _add_done_info(self, seq):
+        """
+        Add done information to each step in the sequence. Can be percent done or binary.
+        Used for learning a done predictor. Done is computed per semantic sequence.
+        """
+        seq.done = np.zeros((len(seq.states),))
+        skill_done = (np.where(seq.skills[:-1] != seq.skills[1:]))[0]
+        skill_done = np.concatenate([skill_done, np.array([len(seq.states) - 1])])
+
+        start = 0
+        for done_idx in skill_done:
+            if self.hparams.load_frac_done:
+                skill = seq.skills[start : done_idx + 1]
+                seq.done[start : done_idx + 1] = np.cumsum(
+                    np.ones((len(skill))) / len(skill)
+                )
+                start = done_idx + 1
+            else:
+                seq.done[done_idx] = 1
+
+        return seq
+
 
 class SingleSequenceDataset(BaseDataset):
+    """
+    Input format: L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
+    """
+
     def __init__(self, *args, **kwargs):
         self.semantic_seqs = self._split_by_semantic_skills()
         self.concat_seq = self._tokenize_and_concatenate_sequence()
@@ -69,7 +95,6 @@ class SingleSequenceDataset(BaseDataset):
         # L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
         # then split tokens into chunk for each data sample
         # create masks to index the language, state, and actions separately
-
         for seq in self.semantic_seqs:
             states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
             # ignore pads
@@ -206,10 +231,13 @@ class SingleSequenceDataset(BaseDataset):
 
 
 class SingleSequenceDatasetV2(SingleSequenceDataset):
+    """
+    Input format: s1 | L1 | a1, s2, a2, s3, a3 ... | s1 | L2 | a1 ...
+    """
+
     def _tokenize_and_concatenate_sequence(self):
         """
         Combine every state/action/language into a long sequence
-        e.g. s1 | L1 | a1, s2, a2, s3, a3 ... | s1 | L2 | a1 ...
         """
 
         output = {
@@ -294,10 +322,12 @@ class SingleSequenceDatasetV2(SingleSequenceDataset):
 
 
 class SingleSequenceBinaryDataset(SingleSequenceDataset):
+    """
+    Input format: e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
+    """
     def _tokenize_and_concatenate_sequence(self):
         """
         Combine every state/action/language into a long sequence
-        e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
         Add a binary token after the state to denote whether to predict
         language or action next. 1 - predict language, 0 - predict action
 

@@ -56,6 +56,8 @@ def load_model_and_env_from_cfg(cfg):
 
     # create environment
     env = instantiate(cfg.env)
+
+    model.add_extra_configs(cfg)
     return model, env
 
 

@@ -1,27 +1,26 @@
-_target_: data.language_behavior.LanguageBehaviorDataModule
+_target_: data.language_behavior.ALFREDLanguageBehaviorDataModule
 data_conf: 
-  env_name: kitchen-mixed-v0
+  env_name: alfred
   split:
     train: 0.8
     val: 0.2
   batch_size: 4
-  data_dir: /data/anthony/gpt_policy/data/kitchen
-  state_dim: 60
-  action_dim: 9
+  data_dir: /data/anthony/ET/data/small_test
   modalities:
     # - behavior
     - paired
-    - language
+    # - language
 
   dataset_cls: # config for the dataset
-    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
+    _target_: data.alfred.ALFREDSingleSequenceDataset
     hparams:
       load_frac_done: True
       load_lang: True
       decoder_model_cls: gpt2
       subseq_len: 10
       data_dir: ${data_conf.data_dir} 
-      annotation_file: annotations.json
+      ET_ROOT: /data/anthony/ET
+      partition: valid_seen
       add_lang_before_state: False
       discretize_actions: False
       num_bins: 256
@@ -29,11 +28,12 @@ data_conf:
       chunk_size: 512
   
   behavior_dataset_cls: 
-    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
+    _target_: data.alfred.ALFREDSingleSequenceDataset
     hparams: 
       load_frac_done: True
       load_lang: False
       data_dir: ${data_conf.data_dir} 
+      partition: valid_seen
       discretize_actions: False
       num_bins: 256
       chunk_size: 512
@@ -61,4 +61,4 @@ data_conf:
     _target_: data.sampler.RepeatedDataLoader
     n_repeat: 10
     num_workers: 4
-    batch_size: 8
+    batch_size: 6

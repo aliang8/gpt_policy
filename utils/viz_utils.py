@@ -43,10 +43,12 @@ def save_episode_as_video(episode, filename, caption=""):
             thickness=1,
         )
 
-        text = f"curr skill: {caption}"
-
-        if "progress_pred" in episode:
-            text += f"\nprogress: {episode['progress_pred'][t]}"
+        text = ""
+        keys = ['curr_skill', 'progress_pred', 'binary_token']
+        
+        for key in keys:
+            if key in episode:
+                text += f"{key}: {episode[key][t]}\n"
 
         # add caption text
         y0, dy = 50, 20

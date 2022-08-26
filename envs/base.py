@@ -79,7 +79,7 @@ class GymEnv(BaseEnvironment):
             Image.fromarray(self._render_raw(mode=mode))
         )
         return np.array(img) / 255.0
-    
+
     def _make_env(self, id):
         """Instantiates the environment given the ID."""
         import gym
@@ -96,7 +96,7 @@ class GymEnv(BaseEnvironment):
         if hasattr(self._env, "get_episode_info"):
             return self._env.get_episode_info()
         return AttrDict()
-    
+
     def _render_raw(self, mode):
         """Returns rendering as uint8 in range [0...255]"""
         return self._env.render(mode=mode)

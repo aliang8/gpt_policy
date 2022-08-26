@@ -14,7 +14,7 @@ from typing import Optional, Dict, List, Any
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from pytorch_lightning.utilities.cli import DATAMODULE_REGISTRY
 from pytorch_lightning.trainer.supporters import CombinedLoader
-from utils.data_utils import padded_tensor, padded_3d
+from utils.data_utils import padded_tensor, padded_3d, collate_fn
 from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
 from dataclasses import dataclass
@@ -283,22 +283,6 @@ class KitchenDataset(BaseDataset):
             )
             seq.action = discretized_action
 
-    def collate_fn(self, data):
-        # custom collate fn for pad on the fly and sorted examples
-        # sort examples by sequence length so we batch together the longest sequences
-        # also pad per batch instead of padding to max length
-        bs = len(data)
-        output = AttrDict()
-        for k in list(data[0].keys()):
-            vs = [torch.Tensor(data[i][k]) for i in range(bs)]
-
-            # pad all to the same length
-            if len(vs[0].shape) == 1:
-                output[k], _ = padded_tensor(vs, pad_idx=0, left_padded=False)
-            elif len(vs[0].shape) == 2:
-                output[k] = padded_3d(vs, pad_idx=0, dtype=torch.float)
-        return output
-
     def __len__(self):
         return len(self.sequences)
 
@@ -315,28 +299,6 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         for k, v in seq.items():
             new_seq[k] = v[start:end]
         return new_seq
-
-    def _add_done_info(self, seq):
-        """
-        Add done information to each step in the sequence. Can be percent done or binary.
-        Used for learning a done predictor. Done is computed per semantic sequence.
-        """
-        seq.done = np.zeros((len(seq.states),))
-        skill_done = (np.where(seq.skills[:-1] != seq.skills[1:]))[0]
-        skill_done = np.concatenate([skill_done, np.array([len(seq.states) - 1])])
-
-        start = 0
-        for done_idx in skill_done:
-            if self.hparams.load_frac_done:
-                skill = seq.skills[start : done_idx + 1]
-                seq.done[start : done_idx + 1] = np.cumsum(
-                    np.ones((len(skill))) / len(skill)
-                )
-                start = done_idx + 1
-            else:
-                seq.done[done_idx] = 1
-
-        return seq
 
     def _split_by_semantic_skills(self):
         """
@@ -484,7 +446,7 @@ class KitchenDataModule(pl.LightningDataModule):
             pin_memory=True,
             worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
             batch_sampler=self.kitchen_dataset.get_sampler(self.train.indices),
-            collate_fn=self.kitchen_dataset.collate_fn,
+            collate_fn=collate_fn,
         )
         return dataloader
 
@@ -498,7 +460,7 @@ class KitchenDataModule(pl.LightningDataModule):
             pin_memory=True,
             worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
             batch_sampler=self.kitchen_dataset.get_sampler(self.val.indices),
-            collate_fn=self.kitchen_dataset.collate_fn,
+            collate_fn=collate_fn,
         )
         return dataloader
 
@@ -508,140 +470,3 @@ class KitchenDataModule(pl.LightningDataModule):
 
     def teardown(self, stage: Optional[str] = None):
         pass
-
-
-@DATAMODULE_REGISTRY
-class LanguageBehaviorDataModule(KitchenDataModule):
-    """
-    Language-Behavior dataset
-    """
-
-    def setup(self, stage: Optional[str] = None):
-        if "language" in self.hparams.modalities:
-            # merge multiple language datasets
-            l_datasets = []
-            for dataset in self.hparams.language_datasets:
-                self.hparams["language_dataset_cls"]["_target_"] = dataset
-                l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
-                l_datasets.append(instantiate(l_cfg, _recursive_=False))
-
-            self.lang_dataset = ConcatDataset(l_datasets)
-
-        if "paired" in self.hparams.modalities:
-            p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])
-            self.paired_dataset = instantiate(
-                p_cfg, dataset=self.dataset, _recursive_=False
-            )
-
-        if "behavior" in self.hparams.modalities:
-            b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
-            self.behavior_dataset = instantiate(
-                b_cfg, dataset=self.dataset, _recursive_=False
-            )
-
-        # Assign train/val datasets for use in dataloaders
-        if stage == "fit" or stage is None:
-            if "language" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.lang_dataset)
-                self.lang_train, self.lang_val = random_split(
-                    self.lang_dataset, [num_tr, num_val]
-                )
-                self.logger.info(f"Language dataset train size: {num_tr}")
-                self.logger.info(f"Language dataset val size: {num_val}")
-
-            if "paired" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.paired_dataset)
-                self.paired_train, self.paired_val = random_split(
-                    self.paired_dataset, [num_tr, num_val]
-                )
-
-                self.logger.info(f"Paired dataset train size: {num_tr}")
-                self.logger.info(f"Paired dataset val size: {num_val}")
-
-            if "behavior" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
-                self.behavior_train, self.behavior_val = random_split(
-                    self.behavior_dataset, [num_tr, num_val]
-                )
-
-                self.logger.info(f"Behavior dataset train size: {num_tr}")
-                self.logger.info(f"Behavior dataset val size: {num_val}")
-            import ipdb
-
-            ipdb.set_trace()
-
-    def train_dataloader(self):
-        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
-
-        loaders = {}
-        if "language" in self.hparams.modalities:
-            lang_dl = instantiate(
-                cfg,
-                dataset=self.lang_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["language"] = lang_dl
-
-        if "behavior" in self.hparams.modalities:
-            behavior_dl = instantiate(
-                cfg,
-                dataset=self.behavior_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["behavior"] = behavior_dl
-
-        if "paired" in self.hparams.modalities:
-            paired_dl = instantiate(
-                cfg,
-                dataset=self.paired_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(
-                    self.paired_train.indices
-                ),
-                collate_fn=self.paired_dataset.collate_fn,
-            )
-            loaders["paired"] = paired_dl
-
-        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
-        return combined_loader
-
-    def val_dataloader(self):
-        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
-        # cfg['n_repeat'] = 1
-
-        loaders = {}
-        if "language" in self.hparams.modalities:
-            lang_dl = instantiate(
-                cfg,
-                dataset=self.lang_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            if len(lang_dl) > 0:
-                loaders["language"] = lang_dl
-
-        if "behavior" in self.hparams.modalities:
-            behavior_dl = instantiate(
-                cfg,
-                dataset=self.behavior_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["behavior"] = behavior_dl
-
-        if "paired" in self.hparams.modalities:
-            paired_dl = instantiate(
-                cfg,
-                dataset=self.paired_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(self.paired_val.indices),
-                collate_fn=self.paired_dataset.collate_fn,
-            )
-            loaders["paired"] = paired_dl
-
-        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
-        return combined_loader

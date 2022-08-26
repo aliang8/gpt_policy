@@ -88,3 +88,20 @@ def padded_3d(
             output[i, j, : len(item)] = item
 
     return output
+
+
+def collate_fn(data):
+    # custom collate fn for pad on the fly and sorted examples
+    # sort examples by sequence length so we batch together the longest sequences
+    # also pad per batch instead of padding to max length
+    bs = len(data)
+    output = AttrDict()
+    for k in list(data[0].keys()):
+        vs = [torch.Tensor(data[i][k]) for i in range(bs)]
+
+        # pad all to the same length
+        if len(vs[0].shape) == 1:
+            output[k], _ = padded_tensor(vs, pad_idx=0, left_padded=False)
+        elif len(vs[0].shape) == 2:
+            output[k] = padded_3d(vs, pad_idx=0, dtype=torch.float)
+    return output

@@ -1,13 +1,13 @@
 logger: 
   - _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: /data/anthony/gpt_transformer/logs
-    name: binary_pos_weight_100
+    name: test_alfred
   - _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: ${logger[0].save_dir}
     name: ${logger[0].name}
     entity: clvr
     project: gpt_lang_transformer
   
-# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/more_layers_state_encoding/more_layers_state_encoding-epoch=01-step=1520.ckpt
+# ckpt_path: /data/anthony/gpt_transformer/logs/binary_tok_paired_lang_log_val/binary_tok_paired_lang_log_val-epoch=92-step=75330.ckpt
 # max_epochs: 200
 # limit_train_batches: 2

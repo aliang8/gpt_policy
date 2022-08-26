@@ -13,7 +13,7 @@ from envs.base import BaseEnvironment
 from utils.pytorch_utils import ten2ar
 from utils.viz_utils import save_episode_as_video
 from utils.data_utils import listdict2dictlist
-from data.kitchen import LANG_BOS_TOKEN, LANG_EOS_TOKEN
+from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
 
 class Rollout:
@@ -250,7 +250,7 @@ class Rollout:
             .to(device=device, dtype=torch.float32)
         )
 
-        binary_tokens = torch.zeros((0, 1), device=device, dtype=torch.float32)
+        # binary_tokens = torch.zeros((0, 1), device=device, dtype=torch.float32)
         actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
         timesteps = torch.tensor(0, device=device, dtype=torch.long).reshape(1, 1)
 
@@ -285,7 +285,7 @@ class Rollout:
                 [actions, torch.zeros((1, action_dim), device=device)], dim=0
             )
 
-            action, binary_token, masks, info = self._agent.get_action(
+            action, binary_token, masks, action_info = self._agent.get_action(
                 states=states,
                 actions=actions,
                 timesteps=timesteps,
@@ -293,7 +293,7 @@ class Rollout:
             )
 
             # DEBUG
-            sigmoid_vals.append(info.item())
+            sigmoid_vals.append(action_info["sigmoid_val"].item())
 
             actions[-1] = action
             action = ten2ar(action.squeeze())
@@ -313,7 +313,8 @@ class Rollout:
                     done=done,
                     reward=reward,
                     progress_pred=None,
-                    binary_token=binary_token,
+                    binary_token=ten2ar(binary_token).squeeze(-1)[-1],
+                    curr_skill=action_info["prompt"],
                     info=info,
                 )
             )

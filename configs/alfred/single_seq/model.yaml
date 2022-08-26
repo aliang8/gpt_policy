@@ -1,9 +1,11 @@
-_target_: model.lb_single_seq_decoder.Model 
+_target_: model.lb_single_seq_decoder_alfred.Model 
 model_conf:
-  env_name: kitchen-mixed-v0
+  env_name: alfred
   pred_done: True
   pred_progress: False
   binary_pos_weight: null
+  data_dir: /data/anthony/ET/data/small_test
+  ET_ROOT: /data/anthony/ET
 
   # loss weighting
   lang_only_pred_loss_weight: 1.0
@@ -14,4 +16,9 @@ model_conf:
   paired_aux_pred_loss_weight: 1.0
   paired_lang_pred_loss_weight: 1.0
   paired_action_pred_loss_weight: 1.0
+  paired_target_pred_loss_weight: 1.0
 
+  state_encoder:  
+    enc_method: mlp
+    input_type: resnet_feats
+    enc_dim: 256
