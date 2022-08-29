@@ -308,13 +308,12 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         all_semantic_seqs = []
 
         for seq in self.sequences:
+            seq.done = self._add_done_info(seq)
+            semantic_seqs = []
+
             # identify the start of semantic skill
             split_indx = np.where(seq.skills[:-1] != seq.skills[1:])[0]
             split_indx = np.concatenate([split_indx, [len(seq.skills)]])
-
-            semantic_seqs = []
-
-            seq = self._add_done_info(seq)
 
             start = 0
             for end in split_indx:
@@ -330,6 +329,10 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
                     semantic_seq.lang_attention_mask = self.skill_to_token_map[skill][
                         "attention_mask"
                     ]
+
+                semantic_seq.first_states = np.zeros_like(semantic_seq.done)
+                semantic_seq.first_states[0] = 1
+
                 semantic_seqs.append(semantic_seq)
                 start = end + 1
 
@@ -374,6 +377,33 @@ class SemanticSkillsKitchenDataset(KitchenDataset):
         return self.data[idx]
 
 
+class FilteredSemanticSkillsKitchenDataset(SemanticSkillsKitchenDataset):
+    """
+    To make the paired dataset more realistic, we only annotate a handful
+    of trajectories for each skill.
+    """
+
+    def _split_by_semantic_skills(self):
+        semantic_seqs = super()._split_by_semantic_skills()
+        skill2seq = {skill_id: [] for skill_id in range(7)}
+        [skill2seq[int(seq.skills[0])].append(i) for i, seq in enumerate(semantic_seqs)]
+
+        num_seq_per_skill = 5
+
+        for skill, indices in skill2seq.items():
+            print(f"{skill}: {len(indices)}")
+
+        # pick a few sequences for each skill to have language annotations
+        indices = [
+            np.random.choice(skill2seq[skill_id], num_seq_per_skill, replace=False)
+            for skill_id in range(7)
+        ]
+
+        indices = np.concatenate(indices)
+        semantic_seqs = [semantic_seqs[idx] for idx in indices]
+        return semantic_seqs
+
+
 class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenDataset):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
         self.hparams = hparams
@@ -387,6 +417,15 @@ class KitchenSingleSequenceV2Dataset(
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
         self.hparams = hparams
         SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
+
+
+class FilteredKitchenSingleSequenceV2Dataset(
+    SingleSequenceDatasetV2, FilteredSemanticSkillsKitchenDataset
+):
+    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
+        self.hparams = hparams
+        FilteredSemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
         SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
 
 

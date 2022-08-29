@@ -29,7 +29,7 @@ from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead, BertOnlyNSPHead
 from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
 
-from model.modules.alfred_state_encoder import ALFREDStateEncoder
+# from model.modules.alfred_state_encoder import ALFREDStateEncoder
 
 
 @MODEL_REGISTRY
@@ -469,17 +469,12 @@ class Model(pl.LightningModule):
             )
             losses["behavior_only_action_pred_loss"] = action_pred_loss
 
-            binary_token_mask = torch.roll(
-                behavior_input["combined_state_mask"], 1, dims=1
-            ).bool()
-            binary_token_mask[:, 0] = 0
-
-            aux_pred_loss = self._compute_aux_pred_loss(
-                aux_values=aux_pred,
-                target_aux_values=behavior_input["tokens"],
-                mask=binary_token_mask,
-            )
-            losses["aux_pred_loss"] = aux_pred_loss
+            # aux_pred_loss = self._compute_aux_pred_loss(
+            #     aux_values=aux_pred,
+            #     target_aux_values=behavior_input["first_states"].float(),
+            #     mask=behavior_input["state_mask"].bool(),
+            # )
+            # losses["behavior_aux_pred_loss"] = aux_pred_loss
 
         if "paired" in batch:
             paired_input = batch["paired"]

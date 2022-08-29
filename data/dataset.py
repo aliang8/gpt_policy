@@ -48,7 +48,7 @@ class BaseDataset(Dataset):
         Add done information to each step in the sequence. Can be percent done or binary.
         Used for learning a done predictor. Done is computed per semantic sequence.
         """
-        seq.done = np.zeros((len(seq.states),))
+        done = np.zeros((len(seq.states),))
         skill_done = (np.where(seq.skills[:-1] != seq.skills[1:]))[0]
         skill_done = np.concatenate([skill_done, np.array([len(seq.states) - 1])])
 
@@ -56,14 +56,14 @@ class BaseDataset(Dataset):
         for done_idx in skill_done:
             if self.hparams.load_frac_done:
                 skill = seq.skills[start : done_idx + 1]
-                seq.done[start : done_idx + 1] = np.cumsum(
+                done[start : done_idx + 1] = np.cumsum(
                     np.ones((len(skill))) / len(skill)
                 )
                 start = done_idx + 1
             else:
-                seq.done[done_idx] = 1
+                done[done_idx] = 1
 
-        return seq
+        return done
 
 
 class SingleSequenceDataset(BaseDataset):
@@ -86,6 +86,7 @@ class SingleSequenceDataset(BaseDataset):
             "all_states": [],
             "all_actions": [],
             "all_dones": [],
+            "all_first_states": [],
             "all_timesteps": [],
         }
 
@@ -113,6 +114,9 @@ class SingleSequenceDataset(BaseDataset):
 
             if "done" in seq:
                 output["all_dones"].append(seq.done)
+            
+            if "first_states" in seq:
+                output["all_first_states"].append(seq.first_states)
 
             T = actions.shape[0]
             # states - T, actions - T
@@ -204,6 +208,13 @@ class SingleSequenceDataset(BaseDataset):
                 )
             else:
                 dones = None
+                
+            if "all_first_states" in concat_seq and len(concat_seq["all_first_states"]) > 0:
+                first_states = np.take(
+                    concat_seq["all_first_states"], action_indices.astype(np.int), axis=0
+                )
+            else:
+                first_states = None
 
             chunks.append(
                 {
@@ -212,6 +223,7 @@ class SingleSequenceDataset(BaseDataset):
                     "actions": actions,
                     "timesteps": timesteps,
                     "dones": dones,
+                    "first_states": first_states,
                     "state_mask": np.ones(len(states)),
                     "action_mask": np.ones(len(actions)),
                     "combined_state_mask": concat_seq["state_mask"][r],
@@ -249,6 +261,7 @@ class SingleSequenceDatasetV2(SingleSequenceDataset):
             "all_states": [],
             "all_actions": [],
             "all_dones": [],
+            "all_first_states": [],
             "all_timesteps": [],
         }
 
@@ -274,6 +287,9 @@ class SingleSequenceDatasetV2(SingleSequenceDataset):
             if "done" in seq:
                 output["all_dones"].append(seq.done)
 
+            if "first_states" in seq:
+                output["all_first_states"].append(seq.first_states)
+                
             T = actions.shape[0]
             # states - T, actions - T
             total_num_tokens = 2 * T + num_lang_tokens
@@ -325,6 +341,7 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
     """
     Input format: e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
     """
+
     def _tokenize_and_concatenate_sequence(self):
         """
         Combine every state/action/language into a long sequence
