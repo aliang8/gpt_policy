@@ -127,14 +127,17 @@ class LanguageBehaviorDataModule(pl.LightningDataModule):
             loaders["behavior"] = behavior_dl
 
         if "paired" in self.hparams.modalities:
+            batch_sampler = None
+            if hasattr(self.paired_train, "indices"):
+                batch_sampler = self.paired_dataset.get_sampler(
+                    self.paired_train.indices
+                )
             paired_dl = instantiate(
                 cfg,
                 dataset=self.paired_train,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(
-                    self.paired_train.indices
-                ),
+                batch_sampler=batch_sampler,
                 collate_fn=collate_fn,
             )
             loaders["paired"] = paired_dl
@@ -167,12 +170,17 @@ class LanguageBehaviorDataModule(pl.LightningDataModule):
             loaders["behavior"] = behavior_dl
 
         if "paired" in self.hparams.modalities:
+            batch_sampler = None
+            if hasattr(self.paired_train, "indices"):
+                batch_sampler = self.paired_dataset.get_sampler(
+                    self.paired_train.indices
+                )
             paired_dl = instantiate(
                 cfg,
                 dataset=self.paired_val,
                 pin_memory=True,
                 worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=self.paired_dataset.get_sampler(self.paired_val.indices),
+                batch_sampler=batch_sampler,
                 collate_fn=collate_fn,
             )
             loaders["paired"] = paired_dl

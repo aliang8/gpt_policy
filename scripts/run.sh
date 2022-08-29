@@ -18,6 +18,12 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
     data=configs/kitchen/single_seq/data.yaml \
     model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]
 
+# ALFRED
+CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/alfred/single_seq/trainer.yaml] \
+    data=configs/alfred/single_seq/data.yaml \
+    model=[configs/base/decoder_model.yaml,configs/alfred/single_seq/model.yaml]
+
 # Evaluate
 # multi-gpu eval
 # no spaces between list items
@@ -37,19 +43,28 @@ python3 -m ipdb -c continue multi_eval.py \
     debug=True
 
 # test language, make sure language-only prompting works
-python3 -m ipdb -c continue scripts/test_language_gen.py \
-    exp_name=[pretrained_LM/] \
+CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue scripts/test_language_gen.py \
+    exp_name=[binary_pos_weight_100] \
     sampler.config.num_samples=1 \
     generation.decoding=beam \
     eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml]
 
 # custom
-CUDA_VISIBLE_DEVICES=0 python3 -m ipdb -c continue  trainer.py \
-    trainer=[configs/base/trainer.yaml,configs/kitchen/single_seq/trainer.yaml] \
-    data=configs/kitchen/single_seq/data.yaml \
-    model=[configs/base/decoder_model.yaml,configs/kitchen/single_seq/model.yaml]
+CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue  trainer.py \
+    trainer=[configs/base/trainer.yaml,configs/alfred/single_seq/trainer.yaml] \
+    data=configs/alfred/single_seq/data.yaml \
+    model=[configs/base/decoder_model.yaml,configs/alfred/single_seq/model.yaml]
 
-python3 -m ipdb -c continue multi_eval.py \
-    exp_name=[predict_binary_separate_head_no_weighting] \
-    sampler.config.num_samples=10 \
-    eval_config_files=[configs/base/base_eval.yaml]
+CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue multi_eval.py \
+    exp_name=[binary_pos_weight_100] \
+    sampler.config.num_samples=1 \
+    eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml] \
+    debug=True
+
+CUDA_VISIBLE_DEVICES=3 python3 -m ipdb -c continue multi_eval.py \
+    exp_name=[with_paired_lang_pred] \
+    sampler.config.num_samples=20 \
+    sampler.config.max_episode_len=280 \
+    sampler.config.video_prefix=with_paired_lang_pred \
+    eval_config_files=[configs/base/base_eval.yaml,configs/language_only/generation.yaml] \
+    debug=True

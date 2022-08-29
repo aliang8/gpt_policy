@@ -11,6 +11,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.cli import LightningCLI
 
+import logging
+from utils.logger_utils import get_logger, print_cfg
+
+logger = get_logger("eval")
+
 
 def create_param_grid():
     # get arguments from command line
@@ -44,7 +49,7 @@ def load_model_and_env_from_cfg(cfg):
     ckpts = glob.glob(ckpt_dir + "/*.ckpt")
     ckpt_path = sorted(ckpts)[-1]
 
-    print(f"loading model from: {ckpt_path}")
+    logger.info(f"loading model from: {ckpt_path}")
     assert os.path.exists(ckpt_path)
 
     model_cls = importlib.import_module(cfg.sampler.config.model_target).Model
@@ -53,6 +58,8 @@ def load_model_and_env_from_cfg(cfg):
     )
     model = model.cuda()
     model.eval()
+
+    print_cfg(cfg)
 
     # create environment
     env = instantiate(cfg.env)
@@ -67,10 +74,13 @@ def main():
     model, env = load_model_and_env_from_cfg(combined_conf)
 
     # create rollout helper
+    logger.info("begin rollouts")
     rollout = instantiate(combined_conf.sampler, env=env, agent=model)
 
     # collect trajectories
     episodes = rollout.rollout_multi_episode()
+
+    logger.info("finished rollouts")
     return episodes
 
 

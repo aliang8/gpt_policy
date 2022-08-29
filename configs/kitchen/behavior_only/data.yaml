@@ -1,0 +1,22 @@
+_target_: data.language_behavior.LanguageBehaviorDataModule
+data_conf: 
+  env_name: kitchen-mixed-v0
+  split:
+    train: 0.8
+    val: 0.2
+  batch_size: 8
+  data_dir: /data/anthony/gpt_policy/data/kitchen
+  state_dim: 60
+  action_dim: 9
+  modalities:
+    - behavior
+
+  behavior_dataset_cls: 
+    _target_: data.kitchen.KitchenSingleSequenceDataset
+    hparams: 
+      load_frac_done: False
+      load_lang: False
+      data_dir: ${data_conf.data_dir} 
+      discretize_actions: False
+      num_bins: 256
+      chunk_size: 512

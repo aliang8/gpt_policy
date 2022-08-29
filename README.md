@@ -68,7 +68,7 @@ pip install -e .
 pip3 install protobuf==3.19.0
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python ??
 
-export ALFRED_ROOT=/home/anthony/alfred/
+export ALFRED_ROOT=/data/anthony/alfred/
 export PYTHONPATH=$PWD:$PYTHONPATH
 export LD_LIBRARY_PATH=/usr/local/cuda-10.1/lib64
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
@@ -88,4 +88,10 @@ python -c "import torch; print(torch.version.cuda)"
 pip install torch-scatter -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
 pip install torch-sparse -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
 pip install torch-geometric
+
+export ET_ROOT=$(pwd)
+export ET_LOGS=$ET_ROOT/logs
+export ET_DATA=$ET_ROOT/data
+export PYTHONPATH=$PYTHONPATH:$ET_ROOT
+export ALFRED_ROOT=/data/anthony/alfred/
 ```

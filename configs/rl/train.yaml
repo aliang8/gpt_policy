@@ -1,0 +1,30 @@
+trainer:
+  _target_: rl.train_rl.RLTrainer
+  hparams:
+    # env
+    env:
+      _target_: envs.kitchen.KitchenEnv
+      config:
+        # name: kitchen-mixed-v0  # kitchen-all-tasks-v0
+        # name: kitchen-all-tasks-v0
+        name: kitchen-mlsh-v0
+        unwrap_time: True
+        reward_norm: 1.
+        punish_reward: -100
+        screen_height: 256
+        screen_width: 256
+        obs_dim: 60
+        act_dim: 9
+
+    num_seed_steps: 100
+    num_train_steps: 1e6
+    replay_buffer_capacity: ${trainer.hparams.num_train_steps}
+
+    eval_every: 1e4
+    log_every: 1e4
+    
+    seed: 0
+
+    agent_cfg: ${agent}
+    device: 'cuda'
+    use_wandb: False

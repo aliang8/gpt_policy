@@ -14,4 +14,4 @@ model_conf:
   paired_aux_pred_loss_weight: 1.0
   paired_lang_pred_loss_weight: 1.0
   paired_action_pred_loss_weight: 1.0
-
+  paired_log_alpha_loss_weight: 1.0

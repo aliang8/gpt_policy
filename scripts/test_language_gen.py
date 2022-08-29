@@ -14,12 +14,12 @@ def handle_output(model, output):
     if output.shape[0] > 1:
         for i, candidate_output in enumerate(output):
             decoded_output = model.tokenizer.decode(
-                candidate_output, skip_special_tokens=True
+                candidate_output, skip_special_tokens=False
             )
             print(f"{i}: {decoded_output}")
 
     decoded_output = model.tokenizer.decode(
-        output[random.randint(0, output.shape[0] - 1)], skip_special_tokens=True
+        output[random.randint(0, output.shape[0] - 1)], skip_special_tokens=False
     )
     return decoded_output
 

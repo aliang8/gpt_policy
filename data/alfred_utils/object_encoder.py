@@ -65,14 +65,42 @@ class GNNModel(nn.Module):
         return x
 
 
-def encode_object(obj_metadata, tokenizer, boolean_properties):
+def encode_list_objects(
+    list_objs,
+    tokenizer,
+    boolean_properties,
+    max_obj_tokens,
+    obj2tok,
+    max_visible_objects,
+):
+    obj_encodings = []
+    for obj in list_objs:
+        obj_encoding = encode_object(
+            obj, tokenizer, boolean_properties, max_obj_tokens, obj2tok
+        )
+        obj_encodings.append(obj_encoding)
+
+    obj_encodings = np.stack(obj_encodings)
+    num_objs, emb_dim = obj_encodings.shape
+    obj_encodings_pad = np.zeros((max_visible_objects, emb_dim))
+    obj_encodings_pad[:num_objs] = obj_encodings
+
+    return obj_encodings_pad
+
+
+def encode_object(obj_metadata, tokenizer, boolean_properties, max_obj_tokens, obj2tok):
     # object encoding: name + position + rotation + one_hot_binary_properties
-    name = obj_metadata["name"]
+    # name = obj_metadata["name"]
+    name = obj_metadata["objectType"]
+    # tokenize object type
+    name_tokens = None
+
     position = obj_metadata["position"]
     position_vec = np.array([position["x"], position["y"], position["z"]])
     rotation = obj_metadata["rotation"]
     rotation_vec = np.array([rotation["x"], rotation["y"], rotation["z"]])
     distance = obj_metadata["distance"]  # some floating point value
+    distance = np.array([distance])
 
     # 23 dimensions
     state_vec = np.array([obj_metadata[k] for k in boolean_properties], dtype=np.int)
@@ -87,42 +115,46 @@ def encode_object(obj_metadata, tokenizer, boolean_properties):
         pass
         # print(f"{obj_metadata['objectId']} contains: ")
 
-    return name, position_vec, rotation_vec, distance, state_vec
+    # 34 dimensions
+    obj_encoding = np.concatenate(
+        [name_tokens, position_vec, rotation_vec, distance, state_vec]
+    )
+    return obj_encoding
 
 
 if __name__ == "__main__":
     import pickle
     from utils.lang_utils import get_tokenizer
 
-    # pkl_f = "/data/anthony/alfred/data/json_2.1.0/train/pick_and_place_with_movable_recep-KeyChain-Plate-Shelf-214/trial_T20190908_221228_624762/traj_metadata.pkl"
-    # traj_metadata = pickle.load(open(pkl_f, "rb"))
+    pkl_f = "/data/anthony/alfred/data/json_2.1.0/train/pick_and_place_with_movable_recep-KeyChain-Plate-Shelf-214/trial_T20190908_221228_624762/traj_metadata.pkl"
+    traj_metadata = pickle.load(open(pkl_f, "rb"))
 
-    # num_steps = len(traj_metadata)
-    # init_event = traj_metadata[0].metadata
+    num_steps = len(traj_metadata)
+    init_event = traj_metadata[0].metadata
 
-    # objects = init_event["objects"]
-    # print(f"{len(objects)} objects ")
+    objects = init_event["objects"]
+    print(f"{len(objects)} objects ")
 
-    # # ignore these because they're not boolean
-    # boolean_properties = [k for k, v in objects[0].items() if type(v) == bool]
+    # ignore these because they're not boolean
+    boolean_properties = [k for k, v in objects[0].items() if type(v) == bool]
 
-    # tokenizer = get_tokenizer("gpt2")
+    tokenizer = get_tokenizer("gpt2")
 
-    # for obj in objects:
-    #     encode_object(obj, tokenizer, boolean_properties)
+    for obj in objects:
+        encode_object(obj, tokenizer, boolean_properties)
 
-    from torch_geometric.data import Data
+    # from torch_geometric.data import Data
 
-    model = GNNModel(c_in=10, c_hidden=64, c_out=64, layer_name="GAT", edge_dim=10)
-    print(model)
+    # model = GNNModel(c_in=10, c_hidden=64, c_out=64, layer_name="GAT", edge_dim=10)
+    # print(model)
 
-    input_feat = torch.randn((6, 10))
-    edge_index = torch.Tensor([[0, 1], [3, 5]]).long()
-    edge_attr = torch.randn((2, 10))
+    # input_feat = torch.randn((6, 10))
+    # edge_index = torch.Tensor([[0, 1], [3, 5]]).long()
+    # edge_attr = torch.randn((2, 10))
 
-    print(edge_index.shape, input_feat.shape)
-    out = model(input_feat, edge_index, edge_attr)
-    print(out.shape)
-    out = geom_nn.global_mean_pool(out, torch.zeros((6,)).long())
-    print(out.shape)
-    print(out)
+    # print(edge_index.shape, input_feat.shape)
+    # out = model(input_feat, edge_index, edge_attr)
+    # print(out.shape)
+    # out = geom_nn.global_mean_pool(out, torch.zeros((6,)).long())
+    # print(out.shape)
+    # print(out)

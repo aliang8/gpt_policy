@@ -11,12 +11,16 @@ sampler:
     self_prompting: False 
     model_target: model.lb_single_seq_decoder
     use_model_generate: True
+    reset_from_demonstration_state: False
+    predict_lang: False
+    data_dir: /data/anthony/gpt_policy/data/kitchen
 
 env:
   _target_: envs.kitchen.KitchenEnv
   config:
     # name: kitchen-mixed-v0  # kitchen-all-tasks-v0
-    name: kitchen-all-tasks-v0
+    # name: kitchen-all-tasks-v0
+    name: kitchen-mlsh-v0
     unwrap_time: True
     reward_norm: 1.
     punish_reward: -100

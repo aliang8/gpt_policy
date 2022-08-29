@@ -11,7 +11,7 @@ model_conf:
   output_gaussian: False
   discretize_actions: False
   num_bins: 256
-  train_paired_lang: False
+  train_paired_lang: True
   # pred_progress: True
   max_ep_len: 1000
   load_pretrained_lm_weights: True

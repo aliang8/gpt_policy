@@ -16,8 +16,6 @@ def save_video_sequence(file, frames, fps=10.0):
         video.write(img.astype(np.uint8))
     video.release()
 
-    print(f"Saving video to: {file}")
-
 
 def save_episode_as_video(episode, filename, caption=""):
     frames = []
@@ -44,8 +42,8 @@ def save_episode_as_video(episode, filename, caption=""):
         )
 
         text = ""
-        keys = ['curr_skill', 'progress_pred', 'binary_token']
-        
+        keys = ["curr_skill", "progress_pred", "binary_token"]
+
         for key in keys:
             if key in episode:
                 text += f"{key}: {episode[key][t]}\n"

@@ -73,7 +73,9 @@ class SingleSequenceDataset(BaseDataset):
 
     def __init__(self, *args, **kwargs):
         self.semantic_seqs = self._split_by_semantic_skills()
+        print("tokenizing data")
         self.concat_seq = self._tokenize_and_concatenate_sequence()
+        print("chunking data")
         self.chunks = self._chunk_data()
 
     def _tokenize_and_concatenate_sequence(self):
@@ -325,6 +327,7 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
     """
     Input format: e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
     """
+
     def _tokenize_and_concatenate_sequence(self):
         """
         Combine every state/action/language into a long sequence

@@ -1,0 +1,37 @@
+critic:
+  _target_: modules.critic.DoubleQCritic
+  obs_dim: 60
+  action_dim: 9
+  hidden_dim: 1024
+  hidden_depth: 2
+    
+actor:
+  _target_: agents.actor.LBTransformerActor 
+  model_target: model.lb_single_seq_decoder
+  save_dir: /data/anthony/gpt_transformer/logs/
+  exp_name: with_paired_lang_pred
+  # hidden_depth: 2
+  # hidden_dim: 1024
+  # log_std_bounds: [-5, 2]
+
+agent: 
+  _target_: rl.agents.sac.SACAgent
+  obs_dim: 60
+  action_dim: 9
+  action_range: [-1, 1] # not sure if this is right for kitchen
+  critic_cfg: ${critic}
+  actor_cfg: ${actor}
+  discount: 0.99
+  init_temperature: 0.1
+  alpha_lr: 1e-4
+  alpha_betas: [0.9, 0.999]
+  actor_lr: 1e-4
+  actor_betas: [0.9, 0.999]
+  actor_update_frequency: 1
+  critic_lr: 1e-4
+  critic_betas: [0.9, 0.999]
+  critic_tau: 0.005
+  critic_target_update_frequency: 2
+  batch_size: 8
+  learnable_temperature: true
+  device: cuda
