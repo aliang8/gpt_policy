@@ -2,14 +2,26 @@ import json
 import os
 import sys
 
+"""
+python3 data/alfred_utils/replay_json.py \
+    -dd /data/anthony/alfred/data/json_2.1.0/ \
+    --num_processes 2
+"""
+
 sys.path.append(os.path.join(os.environ["ALFRED_ROOT"]))
 sys.path.append(os.path.join(os.environ["ALFRED_ROOT"], "gen"))
+
 from env.thor_env import ThorEnv
 import glob
-import pickle
 import tqdm
+import random
 import multiprocessing
 import numpy as np
+
+try:
+    import cPickle as pickle
+except:
+    import pickle
 
 
 def replay_json(env, json_file):
@@ -34,7 +46,7 @@ def replay_json(env, json_file):
     event = env.step(dict(traj_data["scene"]["init_action"]))
     events.append(event)
     # import ipdb; ipdb.set_trace()
-    # print("Task: %s" % (traj_data['turk_annotations']['anns'][0]['task_desc']))
+    print("Task: %s" % (traj_data["turk_annotations"]["anns"][0]["task_desc"]))
 
     steps_taken = 0
     for ll_action in traj_data["plan"]["low_actions"]:
@@ -79,6 +91,14 @@ def replay_json(env, json_file):
     return steps_taken, events
 
 
+def split_list(alist, wanted_parts=1):
+    length = len(alist)
+    return [
+        alist[i * length // wanted_parts : (i + 1) * length // wanted_parts]
+        for i in range(wanted_parts)
+    ]
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -86,26 +106,41 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_dir", "-dd", type=str, help="where is traj json files located"
     )
+    parser.add_argument(
+        "--num_processes", type=int, help="number of parallel processes"
+    )
+    parser.add_argument("--debug", action="store_true", help="debug mode")
+
     args = parser.parse_args()
 
-    cpus = 20
-
     # don't use more cpus than you have
-    cpus = np.minimum(cpus, multiprocessing.cpu_count())
+    if args.debug:
+        num_processes = 1
+    else:
+        num_processes = np.minimum(args.num_processes, multiprocessing.cpu_count())
 
     all_json_files = list(glob.glob(os.path.join(args.data_dir, "*/*/*/*.json")))
 
-    def split_list(alist, wanted_parts=1):
-        length = len(alist)
-        return [
-            alist[i * length // wanted_parts : (i + 1) * length // wanted_parts]
-            for i in range(wanted_parts)
-        ]
+    random.shuffle(all_json_files)
 
-    file_chunks = list(split_list(all_json_files, cpus))
+    print(f"{len(all_json_files)} files found")
+
+    count = 0
+    for file in all_json_files:
+        file = file.replace("traj_data.json", "traj_metadata_small.pkl")
+        if not os.path.exists(file):
+            # print(file)
+            count += 1
+
+    print(f"number missing: {count}")
+
+    import ipdb
+
+    ipdb.set_trace()
 
     def generate_traj_metadata(json_files):
-        env = ThorEnv()
+        print("display: ", os.environ.get("DISPLAY")[-1])
+        env = ThorEnv(x_display=os.environ.get("DISPLAY")[-1])
 
         total = len(json_files)
         for i, json_file in enumerate(json_files):
@@ -115,18 +150,40 @@ if __name__ == "__main__":
             phase, task_type, trial_id, f_name = parts
 
             # save
-            metadata_f = os.path.join(os.path.dirname(json_file), "traj_metadata.pkl")
+            metadata_f = os.path.join(
+                os.path.dirname(json_file), "traj_metadata_small.pkl"
+            )
+
+            filter_metadata_f = os.path.join(
+                os.path.dirname(json_file), "traj_metadata_filtered.pkl"
+            )
+
+            # filter only visible objects
+            def filter_visible(list_of_objs):
+                return [obj for obj in list_of_objs if obj["visible"]]
 
             if not os.path.exists(metadata_f):
                 # replay json file and save metadata
-                steps, event_metadata = replay_json(env, json_file)
-                print(steps, len(event_metadata))
+                steps, events_metadata = replay_json(env, json_file)
+                print(steps, len(events_metadata))
 
-                pickle.dump(event_metadata, open(metadata_f, "wb"))
+                # only save parts of the event object
+                save = [event.metadata for event in events_metadata]
+                pickle.dump(save, open(metadata_f, "wb"))
+
+                for d in save:
+                    d["objects"] = filter_visible(d["objects"])
+                pickle.dump(save, open(filter_metadata_f, "wb"))
 
             print(f"{i+1}/{total} completed")
 
-    with multiprocessing.Pool(cpus) as p:
-        results = p.map(generate_traj_metadata, file_chunks)
-        p.close()
-        p.join()
+    if args.debug:
+        generate_traj_metadata(all_json_files)
+    else:
+        file_chunks = list(split_list(all_json_files, num_processes))
+        print(f"{len(file_chunks)} chunks")
+
+        with multiprocessing.Pool(num_processes) as p:
+            results = p.map(generate_traj_metadata, file_chunks)
+            p.close()
+            p.join()

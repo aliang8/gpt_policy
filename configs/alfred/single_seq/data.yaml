@@ -26,6 +26,7 @@ data_conf:
       num_bins: 256
       prepend_lang: True
       chunk_size: 512
+      debug: True
   
   behavior_dataset_cls: 
     _target_: data.alfred.ALFREDSingleSequenceDataset

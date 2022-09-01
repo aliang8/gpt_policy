@@ -59,8 +59,9 @@ class KitchenDataset(BaseDataset):
     }
     BONUS_THRESH = 0.3
 
-    def __init__(self, dataset: List, *args, **kwargs):
+    def __init__(self, hparams: AttrDict, dataset: List, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.hparams = hparams
         self.dataset = dataset
         self.sequences = self._split_dataset_into_sequences()
 
@@ -291,8 +292,8 @@ class KitchenDataset(BaseDataset):
 
 
 class SemanticSkillsKitchenDataset(KitchenDataset):
-    def __init__(self, dataset: List, *args, **kwargs):
-        super().__init__(dataset, *args, **kwargs)
+    def __init__(self, hparams: AttrDict, dataset: List, *args, **kwargs):
+        super().__init__(hparams, dataset, *args, **kwargs)
 
     def _split_seq(self, seq, start, end):
         new_seq = AttrDict()
@@ -406,8 +407,7 @@ class FilteredSemanticSkillsKitchenDataset(SemanticSkillsKitchenDataset):
 
 class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenDataset):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        self.hparams = hparams
-        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SemanticSkillsKitchenDataset.__init__(self, hparams, dataset, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
 
 
@@ -415,8 +415,7 @@ class KitchenSingleSequenceV2Dataset(
     SingleSequenceDatasetV2, SemanticSkillsKitchenDataset
 ):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        self.hparams = hparams
-        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SemanticSkillsKitchenDataset.__init__(self, hparams, dataset, *args, **kwargs)
         SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
 
 
@@ -433,79 +432,5 @@ class KitchenSingleSequenceBinaryDataset(
     SingleSequenceBinaryDataset, SemanticSkillsKitchenDataset
 ):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        self.hparams = hparams
-        SemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
+        SemanticSkillsKitchenDataset.__init__(self, hparams, dataset, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
-
-
-@DATAMODULE_REGISTRY
-class KitchenDataModule(pl.LightningDataModule):
-    """
-    Base class for Kitchen dataset
-    """
-
-    def __init__(self, data_conf, **kwargs):
-        super().__init__()
-
-        # saves parameters into hparams attribute
-        self.save_hyperparameters(data_conf)
-
-        self.logger = logging.getLogger("data")
-        self.logger.setLevel(logging.DEBUG)
-
-    def prepare_data(self):
-        env = gym.make(self.hparams.env_name)
-
-        # get dataset
-        # dictionary of state, actions
-        self.dataset = env.get_dataset()
-
-    def split_tr_and_val(self, data: List):
-        num_examples = len(data)
-        num_train_ex = math.ceil(num_examples * self.hparams.split["train"])
-        num_val_ex = num_examples - num_train_ex
-        return num_train_ex, num_val_ex
-
-    def setup(self, stage: Optional[str] = None):
-        # Assign train/val datasets for use in dataloaders
-        if stage == "fit" or stage is None:
-            cfg = OmegaConf.create(self.hparams["dataset_cls"])
-            self.kitchen_dataset = instantiate(
-                cfg, dataset=self.dataset, _recursive_=False
-            )
-            num_tr, num_val = self.split_tr_and_val(self.kitchen_dataset)
-            self.train, self.val = random_split(self.kitchen_dataset, [num_tr, num_val])
-
-    def train_dataloader(self):
-        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
-
-        dataloader = instantiate(
-            cfg,
-            dataset=self.train,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            batch_sampler=self.kitchen_dataset.get_sampler(self.train.indices),
-            collate_fn=collate_fn,
-        )
-        return dataloader
-
-    def val_dataloader(self):
-        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
-        cfg.n_repeat = 1
-
-        dataloader = instantiate(
-            cfg,
-            dataset=self.train,
-            pin_memory=True,
-            worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            batch_sampler=self.kitchen_dataset.get_sampler(self.val.indices),
-            collate_fn=collate_fn,
-        )
-        return dataloader
-
-    def test_dataloader(self):
-        pass
-        # return DataLoader(self.test, batch_size=32)
-
-    def teardown(self, stage: Optional[str] = None):
-        pass
