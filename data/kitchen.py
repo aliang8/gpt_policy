@@ -23,7 +23,6 @@ from hydra.utils import instantiate
 from data.dataset import (
     BaseDataset,
     SingleSequenceDataset,
-    SingleSequenceDatasetV2,
     SingleSequenceBinaryDataset,
 )
 from torch.utils.data import ConcatDataset
@@ -180,7 +179,7 @@ class KitchenDataset(BaseDataset):
                         skills[last_boundary:t] = self._semantic_diff_skills.index(
                             self.bin2dec(
                                 np.concatenate(
-                                    (semantic_states[t - 1], semantic_states[t])
+                                    ""(semantic_states[t - 1], semantic_states[t])
                                 )
                             )
                         )
@@ -411,26 +410,46 @@ class KitchenSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsKitchenD
         SingleSequenceDataset.__init__(self, *args, **kwargs)
 
 
-class KitchenSingleSequenceV2Dataset(
-    SingleSequenceDatasetV2, SemanticSkillsKitchenDataset
-):
-    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        SemanticSkillsKitchenDataset.__init__(self, hparams, dataset, *args, **kwargs)
-        SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
-
-
-class FilteredKitchenSingleSequenceV2Dataset(
-    SingleSequenceDatasetV2, FilteredSemanticSkillsKitchenDataset
-):
-    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        self.hparams = hparams
-        FilteredSemanticSkillsKitchenDataset.__init__(self, dataset, *args, **kwargs)
-        SingleSequenceDatasetV2.__init__(self, *args, **kwargs)
-
-
 class KitchenSingleSequenceBinaryDataset(
     SingleSequenceBinaryDataset, SemanticSkillsKitchenDataset
 ):
     def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
         SemanticSkillsKitchenDataset.__init__(self, hparams, dataset, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
+
+
+if __name__ == "__main__":
+
+    hparams = AttrDict(
+        data_dir="/data/anthony/gpt_policy/data/kitchen",
+        decoder_model_cls="gpt2",
+        load_lang=True,
+        chunk_size=512,
+        partition="train",
+        load_frac_done=False,
+        debug=True,
+        return_conditioned=True,
+        input_format="v1",
+        env_name="kitchen-mixed-v0",
+        discretize_actions=False,
+        annotation_file="annotations.json",
+    )
+
+    env = gym.make(hparams.env_name)
+
+    dataset = env.get_dataset()
+    dataset = KitchenSingleSequenceDataset(hparams=hparams, dataset=dataset)
+
+    for data in dataset:
+        for k, v in data.items():
+            if v is None:
+                import ipdb
+
+                ipdb.set_trace()
+            assert v is not None
+
+    import ipdb
+
+    ipdb.set_trace()
+
+    print(len(dataset))

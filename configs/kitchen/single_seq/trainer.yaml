@@ -1,13 +1,13 @@
 logger: 
   - _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: /data/anthony/gpt_transformer/logs
-    name: with_paired_lang_pred
+    name: multistream_inf
   - _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: ${logger[0].save_dir}
     name: ${logger[0].name}
     entity: clvr
     project: gpt_lang_transformer
   
-resume_from_checkpoint: /data/anthony/gpt_transformer/logs/with_paired_lang_pred/with_paired_lang_pred-epoch=99-step=57000.ckpt
+# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/with_paired_lang_pred/with_paired_lang_pred-epoch=99-step=57000.ckpt
 max_epochs: 200
 # limit_train_batches: 2

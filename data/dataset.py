@@ -28,7 +28,7 @@ class BaseDataset(Dataset):
         return
 
     @abc.abstractmethod
-    def _tokenize_and_concatenate_sequence(self):
+    def _tokenize_sequence(self):
         """
         Take semantic skill sequences and concatenate them together into a long
         sequence of tokens. Also create masks for each data modality.
@@ -68,22 +68,18 @@ class BaseDataset(Dataset):
 
 class SingleSequenceDataset(BaseDataset):
     """
-    Input format: L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
+    Input format:
+    v0: L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
+    v1: s1 | L1 | a1, s2, a2, s3, a3 ... | s1 | L2 | a1 ...
     """
 
     def __init__(self, *args, **kwargs):
-        self.semantic_seqs = self._split_by_semantic_skills()
-        print("tokenizing data")
-        self.concat_seq = self._tokenize_and_concatenate_sequence()
-        print("chunking data")
-        self.chunks = self._chunk_data()
-
-    def _tokenize_and_concatenate_sequence(self):
-        output = {
+        self.data = {
             "full_sequence": [],
             "token_type_ids": [],
             "state_mask": [],
             "action_mask": [],
+            "rtg_mask": [],
             "lang_token_mask": [],
             "all_states": [],
             "all_actions": [],
@@ -92,14 +88,38 @@ class SingleSequenceDataset(BaseDataset):
             "all_timesteps": [],
         }
 
-        start = 0
+        # first split the demonstrations into individual semantic skills
+        self.semantic_seqs = self._split_by_semantic_skills()
 
-        # combine every state/action/language into a long sequence
-        # L1 | s1,a2,s2,a2,... | L2 | s1,a2,s2,a2,... | L3 | s1,a2,s2,a2,...
-        # then split tokens into chunk for each data sample
-        # create masks to index the language, state, and actions separately
+        self._concatenate_sequence()
+
+        # tokenize whatever possible and put into a long sequence
+        print("tokenizing data")
+        self._tokenize_sequence()
+
+        # split data into evenly sized chunks for training
+        print("chunking data")
+        self.chunks = self._chunk_data()
+
+    def _concatenate_sequence(self):
         for seq in self.semantic_seqs:
             states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
+
+            self.data["all_states"].append(states)
+            self.data["all_actions"].append(actions)
+            self.data["all_timesteps"].append(timesteps)
+
+            if "done" in seq:
+                self.data["all_dones"].append(seq.done)
+                self.data["all_first_states"].append(seq.first_states)
+
+    def _tokenize_sequence(self):
+        # combine every state/action/language into a long sequence
+        # then split tokens into chunk for each data sample
+        # create masks to index the language, state, and actions separately
+        start = 0
+
+        for seq in self.semantic_seqs:
             # ignore pads
             if self.hparams.load_lang:
                 lang_tokens, lang_attn = (
@@ -110,68 +130,98 @@ class SingleSequenceDataset(BaseDataset):
             else:
                 num_lang_tokens = 0
 
-            output["all_states"].append(states)
-            output["all_actions"].append(actions)
-            output["all_timesteps"].append(timesteps)
+            T = seq["actions"].shape[0]
 
-            if "done" in seq:
-                output["all_dones"].append(seq.done)
-            
-            if "first_states" in seq:
-                output["all_first_states"].append(seq.first_states)
-
-            T = actions.shape[0]
-            # states - T, actions - T
-            total_num_tokens = 2 * T + num_lang_tokens
+            # states - T, actions - T, return - T
+            if self.hparams.return_conditioned:
+                total_num_tokens = 3 * T + num_lang_tokens
+                skip = 3
+            else:
+                total_num_tokens = 2 * T + num_lang_tokens
+                skip = 2
 
             concat_sequence = np.zeros((total_num_tokens))
             lang_token_mask_ = np.zeros((total_num_tokens))
             action_mask_ = np.zeros((total_num_tokens))
             state_mask_ = np.zeros((total_num_tokens))
+            rtg_mask_ = np.zeros((total_num_tokens))
 
-            state_r = slice(num_lang_tokens, total_num_tokens, 2)
-            action_r = slice(num_lang_tokens + 1, total_num_tokens, 2)
+            if self.hparams.input_format == "v0":
+                # L1 | s1 | a1
+                state_r = slice(num_lang_tokens, total_num_tokens, skip)
+                action_r = slice(num_lang_tokens + 1, total_num_tokens, skip)
+
+                if self.hparams.load_lang:
+                    lang_r = slice(0, num_lang_tokens)
+            elif self.hparams.input_format == "v1":
+                if self.hparams.return_conditioned:
+                    # R1, s1 | L1 | a1 ....
+                    state_mask_[1] = 1
+                    concat_sequence[1] = start
+
+                    state_r = slice(2 + num_lang_tokens + 2, total_num_tokens, skip)
+                    action_r = slice(2 + num_lang_tokens, total_num_tokens, skip)
+
+                    if self.hparams.load_lang:
+                        lang_r = slice(2, num_lang_tokens + 2)
+
+                    rtg_mask_[0] = 1
+                    rtg_r = slice(2 + num_lang_tokens + 1, total_num_tokens, skip)
+                    rtg_mask_[rtg_r] = 1
+
+                else:
+                    # s1 | L1 | a1 ....
+                    state_mask_[0] = 1
+                    concat_sequence[0] = start
+
+                    state_r = slice(1 + num_lang_tokens + 1, total_num_tokens, skip)
+                    action_r = slice(1 + num_lang_tokens, total_num_tokens, skip)
+
+                    if self.hparams.load_lang:
+                        lang_r = slice(1, num_lang_tokens + 1)
 
             state_mask_[state_r] = 1
             action_mask_[action_r] = 1
 
             # temporary put filler tokens for the state so
             # that we can extract the actual states when chunking
-            concat_sequence[state_r] = np.arange(start, start + T)
+            if self.hparams.input_format == "v0":
+                concat_sequence[state_r] = np.arange(start, start + T)
+            elif self.hparams.input_format == "v1":
+                concat_sequence[state_r] = np.arange(start + 1, start + T)
+
             concat_sequence[action_r] = np.arange(start, start + T)
 
-            # insert the language tokens into the sequence
             if self.hparams.load_lang:
-                lang_r = slice(0, num_lang_tokens)
                 lang_token_mask_[lang_r] = 1
                 concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
 
             # add to list
             token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
-            output["full_sequence"].append(concat_sequence)
-            output["token_type_ids"].append(token_type_id)
-            output["state_mask"].append(state_mask_)
-            output["action_mask"].append(action_mask_)
-            output["lang_token_mask"].append(lang_token_mask_)
+            self.data["full_sequence"].append(concat_sequence)
+            self.data["token_type_ids"].append(token_type_id)
+            self.data["state_mask"].append(state_mask_)
+            self.data["action_mask"].append(action_mask_)
+            self.data["lang_token_mask"].append(lang_token_mask_)
+
+            if self.hparams.return_conditioned:
+                self.data["rtg_mask"].append(rtg_mask_)
 
             start += T
 
-        for k, v in output.items():
+        for k, v in self.data.items():
             if len(v) > 0:
-                output[k] = np.concatenate(v)
-
-        return output
+                self.data[k] = np.concatenate(v)
 
     def _chunk_data(self):
-        concat_seq = self.concat_seq
         chunks = []
         chunk_size = self.hparams.chunk_size
 
         i = 0
 
-        while i < len(concat_seq["full_sequence"]):
+        while i < len(self.data["full_sequence"]):
             if i + chunk_size > len(
-                concat_seq["full_sequence"]
+                self.data["full_sequence"]
             ):  # need to drop the last chunk
                 break
 
@@ -179,61 +229,66 @@ class SingleSequenceDataset(BaseDataset):
 
             # try to get an even number of states and actions
             j = 0
-            while (
-                concat_seq["state_mask"][r].sum() != concat_seq["action_mask"][r].sum()
-            ):
+            while self.data["state_mask"][r].sum() != self.data["action_mask"][r].sum():
                 j += 1
                 r = slice(i, i + chunk_size + j)
 
             i += chunk_size + j
 
-            state_indices = concat_seq["full_sequence"][r][
-                concat_seq["state_mask"][r].astype(np.bool)
+            state_indices = self.data["full_sequence"][r][
+                self.data["state_mask"][r].astype(np.bool)
             ]
-            action_indices = concat_seq["full_sequence"][r][
-                concat_seq["action_mask"][r].astype(np.bool)
+            action_indices = self.data["full_sequence"][r][
+                self.data["action_mask"][r].astype(np.bool)
             ]
 
             states = np.take(
-                concat_seq["all_states"], state_indices.astype(np.int), axis=0
+                self.data["all_states"], state_indices.astype(np.int), axis=0
             )
             actions = np.take(
-                concat_seq["all_actions"], action_indices.astype(np.int), axis=0
+                self.data["all_actions"], action_indices.astype(np.int), axis=0
             )
             timesteps = np.take(
-                concat_seq["all_timesteps"], state_indices.astype(np.int), axis=0
+                self.data["all_timesteps"], state_indices.astype(np.int), axis=0
             )
 
-            if "all_dones" in concat_seq and len(concat_seq["all_dones"]) > 0:
+            if "all_dones" in self.data and len(self.data["all_dones"]) > 0:
                 dones = np.take(
-                    concat_seq["all_dones"], action_indices.astype(np.int), axis=0
+                    self.data["all_dones"], action_indices.astype(np.int), axis=0
                 )
             else:
                 dones = None
-                
-            if "all_first_states" in concat_seq and len(concat_seq["all_first_states"]) > 0:
+
+            if (
+                "all_first_states" in self.data
+                and len(self.data["all_first_states"]) > 0
+            ):
                 first_states = np.take(
-                    concat_seq["all_first_states"], action_indices.astype(np.int), axis=0
+                    self.data["all_first_states"],
+                    action_indices.astype(np.int),
+                    axis=0,
                 )
             else:
                 first_states = None
 
-            chunks.append(
-                {
-                    "tokens": concat_seq["full_sequence"][r],
-                    "states": states,
-                    "actions": actions,
-                    "timesteps": timesteps,
-                    "dones": dones,
-                    "first_states": first_states,
-                    "state_mask": np.ones(len(states)),
-                    "action_mask": np.ones(len(actions)),
-                    "combined_state_mask": concat_seq["state_mask"][r],
-                    "combined_action_mask": concat_seq["action_mask"][r],
-                    "lang_token_mask": concat_seq["lang_token_mask"][r],
-                    "token_type_ids": concat_seq["token_type_ids"][r],
-                }
-            )
+            chunk = {
+                "tokens": self.data["full_sequence"][r],
+                "states": states,
+                "actions": actions,
+                "timesteps": timesteps,
+                "dones": dones,
+                "first_states": first_states,
+                "state_mask": np.ones(len(states)),
+                "action_mask": np.ones(len(actions)),
+                "combined_state_mask": self.data["state_mask"][r],
+                "combined_action_mask": self.data["action_mask"][r],
+                "lang_token_mask": self.data["lang_token_mask"][r],
+                "token_type_ids": self.data["token_type_ids"][r],
+            }
+
+            if self.hparams.return_conditioned:
+                chunk["combined_rtg_mask"] = self.data["rtg_mask"][r]
+            chunks.append(chunk)
 
         return chunks
 
@@ -244,107 +299,12 @@ class SingleSequenceDataset(BaseDataset):
         return self.chunks[idx]
 
 
-class SingleSequenceDatasetV2(SingleSequenceDataset):
-    """
-    Input format: s1 | L1 | a1, s2, a2, s3, a3 ... | s1 | L2 | a1 ...
-    """
-
-    def _tokenize_and_concatenate_sequence(self):
-        """
-        Combine every state/action/language into a long sequence
-        """
-
-        output = {
-            "full_sequence": [],
-            "token_type_ids": [],
-            "state_mask": [],
-            "action_mask": [],
-            "lang_token_mask": [],
-            "all_states": [],
-            "all_actions": [],
-            "all_dones": [],
-            "all_first_states": [],
-            "all_timesteps": [],
-        }
-
-        start = 0
-
-        for seq in self.semantic_seqs:
-            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
-
-            # ignore pads
-            if self.hparams.load_lang:
-                lang_tokens, lang_attn = (
-                    seq["lang_token_ids"],
-                    seq["lang_attention_mask"],
-                )
-                num_lang_tokens = sum(lang_attn)
-            else:
-                num_lang_tokens = 0
-
-            output["all_states"].append(states)
-            output["all_actions"].append(actions)
-            output["all_timesteps"].append(timesteps)
-
-            if "done" in seq:
-                output["all_dones"].append(seq.done)
-
-            if "first_states" in seq:
-                output["all_first_states"].append(seq.first_states)
-                
-            T = actions.shape[0]
-            # states - T, actions - T
-            total_num_tokens = 2 * T + num_lang_tokens
-
-            concat_sequence = np.zeros((total_num_tokens))
-            lang_token_mask_ = np.zeros((total_num_tokens))
-            action_mask_ = np.zeros((total_num_tokens))
-            state_mask_ = np.zeros((total_num_tokens))
-
-            # s1 | L1 | a1 ....
-            state_mask_[0] = 1
-            concat_sequence[0] = start
-
-            state_r = slice(1 + num_lang_tokens + 1, total_num_tokens, 2)
-            action_r = slice(1 + num_lang_tokens, total_num_tokens, 2)
-
-            state_mask_[state_r] = 1
-            action_mask_[action_r] = 1
-
-            # temporary put filler tokens for the state so
-            # that we can extract the actual states when chunking
-            concat_sequence[state_r] = np.arange(start + 1, start + T)
-            concat_sequence[action_r] = np.arange(start, start + T)
-
-            # insert the language tokens into the sequence
-            if self.hparams.load_lang:
-                lang_r = slice(1, num_lang_tokens + 1)
-                lang_token_mask_[lang_r] = 1
-                concat_sequence[lang_r] = lang_tokens[:num_lang_tokens]
-
-            # add to list
-            token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
-            output["full_sequence"].append(concat_sequence)
-            output["token_type_ids"].append(token_type_id)
-            output["state_mask"].append(state_mask_)
-            output["action_mask"].append(action_mask_)
-            output["lang_token_mask"].append(lang_token_mask_)
-
-            start += T
-
-        for k, v in output.items():
-            if len(v) > 0:
-                output[k] = np.concatenate(v)
-
-        return output
-
-
 class SingleSequenceBinaryDataset(SingleSequenceDataset):
     """
     Input format: e.g. s1, <1> | L1 | a1, s2, <0>, a2, s3, <0>, a3
     """
 
-    def _tokenize_and_concatenate_sequence(self):
+    def _tokenize_sequence(self):
         """
         Combine every state/action/language into a long sequence
         Add a binary token after the state to denote whether to predict
@@ -352,18 +312,6 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
 
         The last token of language predicts the first action.
         """
-        output = {
-            "full_sequence": [],
-            "token_type_ids": [],
-            "state_mask": [],
-            "action_mask": [],
-            "lang_token_mask": [],
-            "all_states": [],
-            "all_actions": [],
-            "all_dones": [],
-            "all_timesteps": [],
-        }
-
         start = 0
         for seq in self.semantic_seqs:
             states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
@@ -378,11 +326,11 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
             else:
                 num_lang_tokens = 0
 
-            output["all_states"].append(states)
-            output["all_actions"].append(actions)
-            output["all_timesteps"].append(timesteps)
+            self.data["all_states"].append(states)
+            self.data["all_actions"].append(actions)
+            self.data["all_timesteps"].append(timesteps)
             if "done" in seq:
-                output["all_dones"].append(seq.done)
+                self.data["all_dones"].append(seq.done)
 
             T = actions.shape[0]
             # states - T, actions - T, predictor token - T
@@ -421,16 +369,14 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
             # add to list
             # token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
             token_type_id = 0 * concat_sequence + 1 * lang_token_mask_
-            output["full_sequence"].append(concat_sequence)
-            output["token_type_ids"].append(token_type_id)
-            output["state_mask"].append(state_mask_)
-            output["action_mask"].append(action_mask_)
-            output["lang_token_mask"].append(lang_token_mask_)
+            self.data["full_sequence"].append(concat_sequence)
+            self.data["token_type_ids"].append(token_type_id)
+            self.data["state_mask"].append(state_mask_)
+            self.data["action_mask"].append(action_mask_)
+            self.data["lang_token_mask"].append(lang_token_mask_)
 
             start += T
 
-        for k, v in output.items():
+        for k, v in self.data.items():
             if len(v) > 0:
-                output[k] = np.concatenate(v)
-
-        return output
+                self.data[k] = np.concatenate(v)

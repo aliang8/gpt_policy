@@ -4,6 +4,11 @@ model_conf:
   pred_done: True
   pred_progress: False
   binary_pos_weight: null
+  stochastic: True
+  alpha_lr: 1e-4
+  weight_decay: 0.99
+  log_std_min: -20
+  log_std_max: 2
 
   # loss weighting
   lang_only_pred_loss_weight: 1.0

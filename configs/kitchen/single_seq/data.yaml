@@ -13,8 +13,8 @@ data_conf:
     - paired
     - language
 
-  dataset_cls: # config for the dataset
-    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
+  paired_dataset_cls: # config for the dataset
+    _target_: data.kitchen.KitchenSingleSequenceDataset
     hparams:
       load_frac_done: True
       load_lang: True
@@ -22,14 +22,15 @@ data_conf:
       subseq_len: 10
       data_dir: ${data_conf.data_dir} 
       annotation_file: annotations.json
-      add_lang_before_state: False
       discretize_actions: False
       num_bins: 256
       prepend_lang: True
       chunk_size: 512
+      return_conditioned: True
+      input_format: v1
   
   behavior_dataset_cls: 
-    _target_: data.kitchen.KitchenSingleSequenceV2Dataset
+    _target_: data.kitchen.KitchenSingleSequenceDataset
     hparams: 
       load_frac_done: True
       load_lang: False
@@ -37,8 +38,7 @@ data_conf:
       discretize_actions: False
       num_bins: 256
       chunk_size: 512
-
-  paired_dataset_cls: ${data_conf.dataset_cls}
+      input_format: v1      
 
   language_datasets: 
     - data.language.LanguageDataset
@@ -49,9 +49,9 @@ data_conf:
       vocab_file: kitchen.vocab
       mapping_file: text_to_emb.pkl
       annotation_file: annotations.json
-      language_skills_file: skills_small.txt
-      chunk_size: ${data_conf.dataset_cls.hparams.chunk_size}
-      decoder_model_cls: ${data_conf.dataset_cls.hparams.decoder_model_cls}
+      language_skills_file: skills_small_bad_skills.txt
+      chunk_size: ${data_conf.paired_dataset_cls.hparams.chunk_size}
+      decoder_model_cls: ${data_conf.paired_dataset_cls.hparams.decoder_model_cls}
       
       # wikihow specific
       wikihow_data_dir: /data/anthony/wikihow 
