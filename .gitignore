@@ -9,3 +9,8 @@ slurm_output/*
 .d4rl/
 .mujoco/
 .netrc
+plots/*
+lightning_logs_test/*
+*.ckpt
+*.png
+*.mp4
