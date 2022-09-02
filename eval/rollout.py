@@ -25,6 +25,7 @@ def init_state_action_masks(state_dim, action_dim, start_timestep, device):
     states = torch.zeros((0, state_dim), device=device, dtype=torch.float32)
     actions = torch.zeros((0, action_dim), device=device, dtype=torch.float32)
     timesteps = torch.zeros((1, 0), device=device, dtype=torch.long)
+    returns_to_go = torch.zeros((0, 1), device=device, dtype=torch.long)
 
     # create masks
     lang_token_mask = torch.zeros((1, 0), device=device, dtype=torch.bool)
@@ -46,7 +47,7 @@ def init_state_action_masks(state_dim, action_dim, start_timestep, device):
         "token_type_ids": token_type_ids,
         "lang_token_ids": lang_token_ids,
     }
-    return states, actions, timesteps, masks
+    return states, actions, timesteps, returns_to_go, masks
 
 
 # def init_state_action_masks(obs, state_dim, action_dim, start_timestep, device):
@@ -188,8 +189,8 @@ class Rollout:
         start_ts = init_timestep if init_timestep else 0
 
         # keep track of the entire history to feed into GPT
-        states, actions, timesteps, masks = init_state_action_masks(
-            obs, state_dim, action_dim, start_ts, device
+        states, actions, timesteps, returns_to_go, masks = init_state_action_masks(
+            state_dim, action_dim, start_ts, device
         )
 
         # DEBUG
@@ -199,8 +200,23 @@ class Rollout:
         curr_skill = ""
 
         while not done and self._episode_step < self.config.max_episode_len:
+            states = torch.cat(
+                [states, torch.from_numpy(obs).to(device).unsqueeze(0)], dim=0
+            )
             actions = torch.cat(
                 [actions, torch.zeros((1, action_dim), device=device)], dim=0
+            )
+            timesteps = torch.cat(
+                [
+                    timesteps,
+                    torch.ones((1, 1), device=device, dtype=torch.long)
+                    * (self._episode_step),
+                ],
+                dim=1,
+            )
+            # this changes in online case
+            returns_to_go = torch.cat(
+                [returns_to_go, torch.zeros((1, 1), device=device)], dim=0
             )
 
             if hasattr(self, "prompts") and not self.curr_idx > len(self.prompts):
@@ -211,35 +227,40 @@ class Rollout:
             else:
                 next_prompt = self.prompts[self.curr_idx]
 
-            action, binary_token, masks, action_info = self._agent.get_action(
+            action_output = self._agent.get_action(
                 states=states,
                 actions=actions,
                 timesteps=timesteps,
+                returns_to_go=returns_to_go,
                 next_prompt=next_prompt,
+                use_means=True,
                 **masks,
             )
-            # print(
-            #     ten2ar(binary_token).squeeze(-1)[-1], action_info["sigmoid_val"].item()
-            # )
+            masks = action_output.masks
 
             # DEBUG
-            sigmoid_vals.append(action_info["sigmoid_val"].item())
+            if "info" in action_output:
+                sigmoid_vals.append(action_output.info["sigmoid_val"].item())
 
+                if "curr_skill" in action_output.info:
+                    curr_skill = action_output.info["curr_skill"]
+
+                import ipdb
+
+                ipdb.set_trace()
+                if action_output.binary_token[:, -1].item() == 1:
+                    self.curr_idx += 1
+
+            action = action_output.action_preds
             actions[-1] = action
             action = ten2ar(action.squeeze())
 
             next_obs, reward, done, info = self._env.step(action)
 
-            if "curr_skill" in action_info:
-                curr_skill = action_info["curr_skill"]
-
             if len(prev_completed_tasks) != len(info["completed_tasks"]):
                 pivot_timesteps.append(self._episode_step)
 
             prev_completed_tasks = info["completed_tasks"]
-            binary_token = ten2ar(binary_token).squeeze(-1)[-1]
-            if binary_token == 1:
-                self.curr_idx += 1
 
             episode.append(
                 AttrDict(
@@ -249,26 +270,12 @@ class Rollout:
                     done=done,
                     reward=reward,
                     progress_pred=None,
-                    binary_token=binary_token,
-                    curr_skill=curr_skill,
                     info=info,
+                    **action_output,
                 )
             )
             if self.config.save_video:
                 episode[-1].image = self._env.render()
-
-            cur_state = (
-                torch.from_numpy(next_obs).to(device=device).reshape(1, state_dim)
-            )
-            states = torch.cat([states, cur_state], dim=0)
-            timesteps = torch.cat(
-                [
-                    timesteps,
-                    torch.ones((1, 1), device=device, dtype=torch.long)
-                    * (self._episode_step + 1),
-                ],
-                dim=1,
-            )
 
             obs = next_obs
             self._episode_step += 1

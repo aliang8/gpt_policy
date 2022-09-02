@@ -13,12 +13,15 @@ import numpy as np
 from data.dataset import (
     BaseDataset,
     SingleSequenceDataset,
-    SingleSequenceDatasetV2,
     SingleSequenceBinaryDataset,
 )
 
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
-from utils.lang_utils import get_tokenizer
+from utils.lang_utils import (
+    get_tokenizer,
+    add_start_and_end_token,
+    add_start_and_end_str,
+)
 from typing import Optional, Dict, List, Any
 
 # from ai2thor.interact import DefaultActions
@@ -27,23 +30,9 @@ import sys
 sys.path.append("/data/anthony/alfred")
 import gen.constants as constants
 
+from utils.logger_utils import get_logger
 
-class Actions(Enum):
-    MoveRight = 0
-    MoveLeft = 1
-    MoveAhead = 2
-    MoveBack = 3
-    LookUp = 4
-    LookDown = 5
-    RotateRight = 6
-    RotateLeft = 7
-    PutObject = 8
-    PickupObject = 9
-    OpenObject = 10
-    CloseObject = 11
-    ToggleObjectOff = 12
-    ToggleObjectOn = 13
-    SliceObject = 14
+logger = get_logger("alfred_data")
 
 
 class ALFREDDataset(BaseDataset):
@@ -51,11 +40,12 @@ class ALFREDDataset(BaseDataset):
         self.hparams = hparams
         self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
         start = time.time()
+        logger.info("loading dataset")
         self.jsons_and_keys = self.load_data()
-        print(f"took {time.time() - start} time to load")
+        logger.info(f"took {time.time() - start} time to load")
 
         dataset_size = len(self.jsons_and_keys)
-        print(f"alfred {self.hparams['partition']} dataset size = {dataset_size}")
+        logger.info(f"alfred {self.hparams['partition']} dataset size = {dataset_size}")
 
         with open(os.path.join(self.hparams.data_dir, "params.json"), "r") as f_params:
             self.dataset_info = json.load(f_params)
@@ -63,63 +53,65 @@ class ALFREDDataset(BaseDataset):
         self.vocab_action = torch.load(
             os.path.join(self.hparams.data_dir, "data.vocab")
         )["action_low"]
+        logger.info(f"num actions: {len(self.vocab_action)}")
 
         self.vocab_obj = torch.load(
             os.path.join(self.hparams.ET_ROOT, "files/obj_cls.vocab")
         )
+        logger.info(f"num objects: {len(self.vocab_obj)}")
 
-    def encode_list_objects(self, list_objs, max_visible_objects):
-        obj_encodings = []
+    # def encode_list_objects(self, list_objs, max_visible_objects):
+    #     obj_encodings = []
 
-        for obj in list_objs:
-            obj_encoding = self.encode_object(obj)
-            obj_encodings.append(obj_encoding)
+    #     for obj in list_objs:
+    #         obj_encoding = self.encode_object(obj)
+    #         obj_encodings.append(obj_encoding)
 
-        obj_encodings = np.stack(obj_encodings)
-        num_objs, emb_dim = obj_encodings.shape
-        obj_encodings_pad = np.zeros((max_visible_objects, emb_dim))
-        obj_encodings_pad[:num_objs] = obj_encodings
+    #     obj_encodings = np.stack(obj_encodings)
+    #     num_objs, emb_dim = obj_encodings.shape
+    #     obj_encodings_pad = np.zeros((max_visible_objects, emb_dim))
+    #     obj_encodings_pad[:num_objs] = obj_encodings
 
-        return obj_encodings_pad
+    #     return obj_encodings_pad
 
-    def encode_object(self, obj_metadata):
-        # object encoding: name + position + rotation + one_hot_binary_properties
-        # name = obj_metadata["name"]
-        name = obj_metadata["objectType"]
-        # tokenize object type
-        # name_tokens = self.obj2tok[name]
-        # name_tokens_pad = np.zeros((self.max_obj_tokens))
-        # name_tokens_pad[: len(name_tokens)] = name_tokens
+    # def encode_object(self, obj_metadata):
+    #     # object encoding: name + position + rotation + one_hot_binary_properties
+    #     # name = obj_metadata["name"]
+    #     name = obj_metadata["objectType"]
+    #     # tokenize object type
+    #     # name_tokens = self.obj2tok[name]
+    #     # name_tokens_pad = np.zeros((self.max_obj_tokens))
+    #     # name_tokens_pad[: len(name_tokens)] = name_tokens
 
-        name_tokens_pad = np.array([constants.OBJECTS.index(name)])
+    #     name_tokens_pad = np.array([constants.OBJECTS.index(name)])
 
-        position = obj_metadata["position"]
-        position_vec = np.array([position["x"], position["y"], position["z"]])
-        rotation = obj_metadata["rotation"]
-        rotation_vec = np.array([rotation["x"], rotation["y"], rotation["z"]])
-        distance = obj_metadata["distance"]  # some floating point value
-        distance = np.array([distance])
+    #     position = obj_metadata["position"]
+    #     position_vec = np.array([position["x"], position["y"], position["z"]])
+    #     rotation = obj_metadata["rotation"]
+    #     rotation_vec = np.array([rotation["x"], rotation["y"], rotation["z"]])
+    #     distance = obj_metadata["distance"]  # some floating point value
+    #     distance = np.array([distance])
 
-        # 23 dimensions
-        state_vec = np.array(
-            [obj_metadata[k] for k in self.boolean_properties], dtype=np.int32
-        )
+    #     # 23 dimensions
+    #     state_vec = np.array(
+    #         [obj_metadata[k] for k in self.boolean_properties], dtype=np.int32
+    #     )
 
-        # handle parentReceptacle, receptacleObjectIds, and ObjectTemperature
-        if obj_metadata["parentReceptacle"]:
-            pass
+    #     # handle parentReceptacle, receptacleObjectIds, and ObjectTemperature
+    #     if obj_metadata["parentReceptacle"]:
+    #         pass
 
-        if obj_metadata[
-            "receptacleObjectIds"
-        ]:  # this should go into the relationship graph
-            pass
-            # print(f"{obj_metadata['objectId']} contains: ")
+    #     if obj_metadata[
+    #         "receptacleObjectIds"
+    #     ]:  # this should go into the relationship graph
+    #         pass
+    #         # print(f"{obj_metadata['objectId']} contains: ")
 
-        # 37 dimensions if we encode name as tokens
-        obj_encoding = np.concatenate(
-            [name_tokens_pad, position_vec, rotation_vec, distance, state_vec]
-        )
-        return obj_encoding
+    #     # 37 dimensions if we encode name as tokens
+    #     obj_encoding = np.concatenate(
+    #         [name_tokens_pad, position_vec, rotation_vec, distance, state_vec]
+    #     )
+    #     return obj_encoding
 
     def load_data(self, feats=True, jsons=True):
         """
@@ -130,6 +122,7 @@ class ALFREDDataset(BaseDataset):
             self.feats_lmdb_path = os.path.join(
                 self.hparams.data_dir, self.hparams.partition, "feats"
             )
+            assert os.path.exists(self.feats_lmdb_path)
 
         jsons_and_keys = []
 
@@ -138,13 +131,18 @@ class ALFREDDataset(BaseDataset):
             jsons_file = os.path.join(
                 self.hparams.data_dir, self.hparams.partition, "jsons.pkl"
             )
+            assert os.path.exists(jsons_file)
+            logger.info(f"loading data from: {jsons_file}")
+
             with open(jsons_file, "rb") as jsons_file:
                 jsons = pickle.load(jsons_file)
 
+            logger.info(f"num jsons: {len(jsons)}")
+
             count = 0
             for idx in range(len(jsons)):
-                if self.hparams.debug and count > 100:
-                    break
+                # if self.hparams.debug and count > 100:
+                #     break
 
                 key = "{:06}".format(idx).encode("ascii")
                 if key in jsons:
@@ -243,7 +241,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
         # create semantic sequences
         semantic_sequences = []
 
-        for idx, json_and_key in tqdm.tqdm(enumerate(self.jsons_and_keys)):
+        for idx, json_and_key in tqdm.tqdm(enumerate(self.jsons_and_keys[:200])):
             task_json, key = json_and_key
             image_feats = self.load_frames(key)
 
@@ -255,13 +253,13 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
             ann = random.choice(anns)
             task_desc = ann["task_desc"]
             high_level_descs = ann["high_descs"]
+            high_level_descs = add_start_and_end_str(high_level_descs)
 
             # tokenize language
             # TODO: do we use the task desc?
             tokens = self.tokenizer(high_level_descs, return_tensors="np", padding=True)
 
             high_level_plan = task_json["plan"]["high_pddl"]
-            low_level_seq = task_json["plan"]["low_actions"]
 
             # split actions based on skill alignment
             # last action is a <<stop>> action
@@ -274,39 +272,38 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                 a["valid_interact"] for a in sum(task_json["num"]["action_low"], [])
             ]
 
-            num_steps = len(low_level_seq) + 1
             num_semantic_skills = len(high_level_descs) + 1
             obj_ids = [[] for i in range(num_semantic_skills)]
-            timesteps = np.arange(num_steps)
 
-            count = 0
             # not sure why the alignment isn't correct here
-            for i, a_list in enumerate(task_json["num"]["action_low"]):
+            num_steps = 0
+            for i, a_list in enumerate(task_json["num"]["action_low"][:-1]):
                 for action in a_list:
                     high_idx = action["high_idx"]
 
-                    if count >= len(low_level_seq):
-                        obj_ids[-1].append(-1)
+                    action = task_json["plan"]["low_actions"][num_steps]
+                    if self.has_interaction(action["api_action"]["action"]):
+                        obj_key = (
+                            "receptacleObjectId"
+                            if "receptacleObjectId" in action["api_action"]
+                            else "objectId"
+                        )
+                        object_class = action["api_action"][obj_key].split("|")[0]
+                        interact_obj_id = self.vocab_obj.word2index(object_class)
+                        obj_ids[high_idx].append(interact_obj_id)
                     else:
-                        action = low_level_seq[count]
-                        if self.has_interaction(action["api_action"]["action"]):
-                            obj_key = (
-                                "receptacleObjectId"
-                                if "receptacleObjectId" in action["api_action"]
-                                else "objectId"
-                            )
-                            object_class = action["api_action"][obj_key].split("|")[0]
-                            interact_obj_id = self.vocab_obj.word2index(object_class)
-                            obj_ids[high_idx].append(interact_obj_id)
-                        else:
-                            obj_ids[high_idx].append(
-                                -1
-                            )  # 0 is the index for no object interacted
+                        obj_ids[high_idx].append(
+                            -1
+                        )  # 0 is the index for no object interacted
 
-                    count += 1
+                    num_steps += 1
 
+            obj_ids[-1].append(-1)
             low_to_high = np.array(task_json["num"]["low_to_high_idx"])
-            finished_tok = self.tokenizer("finished")["input_ids"]
+            stop_tok = self.tokenizer(
+                add_start_and_end_str(["stop"])[0], return_tensors="np"
+            )
+            timesteps = np.arange(num_steps + 1)  # plus 1 for the stop action
 
             # add a new sequence for each high level action / skill
             for s_idx in range(num_semantic_skills):
@@ -315,7 +312,8 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                 actions = np.stack([action_ids[s_idx], obj_ids[s_idx]]).transpose(1, 0)
 
                 if s_idx >= len(tokens["input_ids"]):
-                    lang_token_ids = np.array(finished_tok)  # for the <<stop>> token
+                    lang_token_ids = stop_tok["input_ids"][0]  # for the <<stop>> token
+                    attn_mask = stop_tok["attention_mask"][0]
                 else:
                     lang_token_ids = tokens["input_ids"][s_idx]
                     attn_mask = tokens["attention_mask"][s_idx]
@@ -331,7 +329,11 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                     skills=low_to_high[mask],
                 )
 
-                sequence = self._add_done_info(sequence)
+                dones = self._add_done_info(sequence)
+                sequence.done = dones
+                sequence.first_states = np.zeros_like(sequence.done)
+                sequence.first_states[0] = 1
+
                 semantic_sequences.append(sequence)
 
         return semantic_sequences
@@ -347,7 +349,8 @@ class ALFREDSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsALFREDDat
 if __name__ == "__main__":
 
     hparams = AttrDict(
-        data_dir="/data/anthony/ET/data/lmdb_full",
+        data_dir="/misery/anthony/alfred_orig_lmdb_2.1.0",
+        # data_dir="/data/anthony/ET/data/lmdb_full",
         ET_ROOT="/data/anthony/ET",
         decoder_model_cls="gpt2",
         load_lang=True,
@@ -355,6 +358,8 @@ if __name__ == "__main__":
         partition="train",
         load_frac_done=False,
         debug=True,
+        return_conditioned=True,
+        input_format="v1",
     )
     dataset = ALFREDSingleSequenceDataset(hparams=hparams, dataset=None)
 

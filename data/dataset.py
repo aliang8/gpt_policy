@@ -74,19 +74,31 @@ class SingleSequenceDataset(BaseDataset):
     """
 
     def __init__(self, *args, **kwargs):
-        self.data = {
-            "full_sequence": [],
-            "token_type_ids": [],
-            "state_mask": [],
-            "action_mask": [],
-            "rtg_mask": [],
-            "lang_token_mask": [],
-            "all_states": [],
-            "all_actions": [],
-            "all_dones": [],
-            "all_first_states": [],
-            "all_timesteps": [],
-        }
+        self.data = {}
+
+        self.data_keys = [
+            "states",
+            "actions",
+            "timesteps",
+            "dones",
+            "first_states",
+            "valid_interact",
+        ]
+
+        self.mask_keys = [
+            "tokens",
+            "combined_state_mask",
+            "combined_action_mask",
+            "lang_token_mask",
+            "combined_rtg_mask",
+            "token_type_ids",
+        ]
+
+        for key in self.data_keys:
+            self.data[f"all_{key}"] = []
+
+        for key in self.mask_keys:
+            self.data[key] = []
 
         # first split the demonstrations into individual semantic skills
         self.semantic_seqs = self._split_by_semantic_skills()
@@ -103,15 +115,9 @@ class SingleSequenceDataset(BaseDataset):
 
     def _concatenate_sequence(self):
         for seq in self.semantic_seqs:
-            states, actions, timesteps = seq["states"], seq["actions"], seq["timesteps"]
-
-            self.data["all_states"].append(states)
-            self.data["all_actions"].append(actions)
-            self.data["all_timesteps"].append(timesteps)
-
-            if "done" in seq:
-                self.data["all_dones"].append(seq.done)
-                self.data["all_first_states"].append(seq.first_states)
+            for key in self.data_keys:
+                if key in seq:
+                    self.data[f"all_{key}"].append(seq[key])
 
     def _tokenize_sequence(self):
         # combine every state/action/language into a long sequence
@@ -198,14 +204,14 @@ class SingleSequenceDataset(BaseDataset):
 
             # add to list
             token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
-            self.data["full_sequence"].append(concat_sequence)
+            self.data["tokens"].append(concat_sequence)
             self.data["token_type_ids"].append(token_type_id)
-            self.data["state_mask"].append(state_mask_)
-            self.data["action_mask"].append(action_mask_)
+            self.data["combined_state_mask"].append(state_mask_)
+            self.data["combined_action_mask"].append(action_mask_)
             self.data["lang_token_mask"].append(lang_token_mask_)
 
             if self.hparams.return_conditioned:
-                self.data["rtg_mask"].append(rtg_mask_)
+                self.data["combined_rtg_mask"].append(rtg_mask_)
 
             start += T
 
@@ -219,75 +225,44 @@ class SingleSequenceDataset(BaseDataset):
 
         i = 0
 
-        while i < len(self.data["full_sequence"]):
-            if i + chunk_size > len(
-                self.data["full_sequence"]
-            ):  # need to drop the last chunk
+        while i < len(self.data["tokens"]):
+            chunk = {}
+
+            if i + chunk_size > len(self.data["tokens"]):  # need to drop the last chunk
                 break
 
             r = slice(i, i + chunk_size)
 
             # try to get an even number of states and actions
             j = 0
-            while self.data["state_mask"][r].sum() != self.data["action_mask"][r].sum():
+            while (
+                self.data["combined_state_mask"][r].sum()
+                != self.data["combined_action_mask"][r].sum()
+            ):
                 j += 1
                 r = slice(i, i + chunk_size + j)
 
             i += chunk_size + j
 
-            state_indices = self.data["full_sequence"][r][
-                self.data["state_mask"][r].astype(np.bool)
-            ]
-            action_indices = self.data["full_sequence"][r][
-                self.data["action_mask"][r].astype(np.bool)
-            ]
+            indices = self.data["tokens"][r][self.data["combined_state_mask"][r].astype(np.bool)]
 
-            states = np.take(
-                self.data["all_states"], state_indices.astype(np.int), axis=0
+            for key in self.data_keys:
+                if self.data[f"all_{key}"] != []:
+                    chunk[key] = np.take(
+                        self.data[f"all_{key}"], indices.astype(np.int), axis=0
+                    )
+
+            for key in self.mask_keys:
+                if key in self.data:
+                    chunk[key] = self.data[key][r]
+
+            chunk.update(
+                {
+                    "state_mask": np.ones(len(chunk["states"])),
+                    "action_mask": np.ones(len(chunk["actions"])),
+                }
             )
-            actions = np.take(
-                self.data["all_actions"], action_indices.astype(np.int), axis=0
-            )
-            timesteps = np.take(
-                self.data["all_timesteps"], state_indices.astype(np.int), axis=0
-            )
 
-            if "all_dones" in self.data and len(self.data["all_dones"]) > 0:
-                dones = np.take(
-                    self.data["all_dones"], action_indices.astype(np.int), axis=0
-                )
-            else:
-                dones = None
-
-            if (
-                "all_first_states" in self.data
-                and len(self.data["all_first_states"]) > 0
-            ):
-                first_states = np.take(
-                    self.data["all_first_states"],
-                    action_indices.astype(np.int),
-                    axis=0,
-                )
-            else:
-                first_states = None
-
-            chunk = {
-                "tokens": self.data["full_sequence"][r],
-                "states": states,
-                "actions": actions,
-                "timesteps": timesteps,
-                "dones": dones,
-                "first_states": first_states,
-                "state_mask": np.ones(len(states)),
-                "action_mask": np.ones(len(actions)),
-                "combined_state_mask": self.data["state_mask"][r],
-                "combined_action_mask": self.data["action_mask"][r],
-                "lang_token_mask": self.data["lang_token_mask"][r],
-                "token_type_ids": self.data["token_type_ids"][r],
-            }
-
-            if self.hparams.return_conditioned:
-                chunk["combined_rtg_mask"] = self.data["rtg_mask"][r]
             chunks.append(chunk)
 
         return chunks
@@ -369,7 +344,7 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
             # add to list
             # token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
             token_type_id = 0 * concat_sequence + 1 * lang_token_mask_
-            self.data["full_sequence"].append(concat_sequence)
+            self.data["tokens"].append(concat_sequence)
             self.data["token_type_ids"].append(token_type_id)
             self.data["state_mask"].append(state_mask_)
             self.data["action_mask"].append(action_mask_)
@@ -380,3 +355,6 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
         for k, v in self.data.items():
             if len(v) > 0:
                 self.data[k] = np.concatenate(v)
+
+
+# class MultiModalSingleSequenceDataset(SingleSequenceDataset):

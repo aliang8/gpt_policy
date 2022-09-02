@@ -231,24 +231,20 @@ class Model(pl.LightningModule):
         if not self.training and masks["combined_state_mask"][:, -1].any():
             state_out = state_out[:-1]
 
-        # use previous states to predict actions
         if self.hparams.stochastic:
             # predict mean and standard deviation
             action_means, action_stds = self.get_stochastic_action_pred(state_out)
-        else:
-            action_preds = self.predict_action(state_out)
 
-        # predict action from EOS token
-        if masks["lang_token_mask"].sum() != 0:
-            eos_token_out = model_out[masks["eos_token_mask"]].reshape(
-                -1, self.embed_dim
-            )
+            # use eos token to predict action
+            if masks["lang_token_mask"].sum() != 0:
+                eos_token_out = model_out[masks["eos_token_mask"]].reshape(
+                    -1, self.embed_dim
+                )
 
-            actions_eos_mask = (
-                masks["combined_action_mask"] & ~masks["actions_post_eos"]
-            )
+                actions_eos_mask = (
+                    masks["combined_action_mask"] & ~masks["actions_post_eos"]
+                )
 
-            if self.hparams.stochastic:
                 (
                     lang_action_means,
                     lang_action_stds,
@@ -261,27 +257,35 @@ class Model(pl.LightningModule):
 
                 action_preds_means = action_preds_means[masks["combined_action_mask"]]
                 action_preds_stds = action_preds_stds[masks["combined_action_mask"]]
+            else:
+                action_preds_means = action_means
+                action_preds_stds = action_stds
 
-                action_dist = Independent(
-                    Normal(action_preds_means, action_preds_stds), 1
+            action_dist = Independent(Normal(action_preds_means, action_preds_stds), 1)
+
+            if use_means:
+                action_preds = action_dist.mean
+            else:
+                action_preds = action_dist.sample()
+        else:
+            # predict action from EOS token
+            if masks["lang_token_mask"].sum() != 0:
+                eos_token_out = model_out[masks["eos_token_mask"]].reshape(
+                    -1, self.embed_dim
                 )
 
-                if use_means:
-                    action_preds = action_dist.mean
-                else:
-                    action_preds = action_dist.sample()
+                actions_eos_mask = (
+                    masks["combined_action_mask"] & ~masks["actions_post_eos"]
+                )
 
-                action_preds_combined[masks["combined_action_mask"]] = action_preds
-            else:
                 lang_act_preds = self.predict_action(eos_token_out)
                 action_preds_combined[actions_eos_mask] = action_preds
                 action_preds_combined[masks["actions_post_eos"]] = lang_act_preds
-        else:
-            action_preds_combined[masks["combined_action_mask"]] = action_preds
+                action_preds = action_preds_combined[masks["combined_action_mask"]]
+            else:
+                action_preds = self.predict_action(state_out)
 
-        action_preds_full[masks["action_mask"]] = action_preds_combined[
-            masks["combined_action_mask"]
-        ]
+        action_preds_full[masks["action_mask"]] = action_preds
 
         # predict binary token
         state_out = model_out[masks["combined_state_mask"]]
@@ -309,12 +313,10 @@ class Model(pl.LightningModule):
         lang_token_logits = torch.zeros(
             (*model_out.shape[:2], self.vocab_size), device=self.device
         )
-
-        if lang_token_mask.sum() != 0:
-            # use previous lang to predict next lang tokens
-            lang_out = model_out[lang_token_mask].reshape(-1, self.embed_dim)
-            lang_token_pred = self.model.lm_head(lang_out)
-            lang_token_logits[lang_token_mask] = lang_token_pred
+        # use previous lang to predict next lang tokens
+        lang_out = model_out[lang_token_mask].reshape(-1, self.embed_dim)
+        lang_token_pred = self.model.lm_head(lang_out)
+        lang_token_logits[lang_token_mask] = lang_token_pred
 
         return AttrDict(lang_token_logits=lang_token_logits)
 
@@ -349,7 +351,6 @@ class Model(pl.LightningModule):
         timesteps: torch.Tensor = None,
         returns_to_go: torch.Tensor = None,
         actions: torch.Tensor = None,
-        use_means: bool = False,
         **kwargs,
     ):
         """
@@ -467,14 +468,12 @@ class Model(pl.LightningModule):
     ):
         # predict next language skill given current skill as context
         # mask out loss for padding tokens
-        vocab_size = lang_token_logits.size(-1)
-
         pred_logits = lang_token_logits[lang_token_mask][..., :-1, :].contiguous()
         gt_tokens = target_lang_tokens[lang_token_mask][..., 1:].contiguous()
 
         # apply mask
         lang_pred_loss = self.lang_loss_fn(
-            pred_logits.view(-1, vocab_size),
+            pred_logits.view(-1, self.vocab_size),
             gt_tokens.long().view(-1),
         )
 
@@ -544,6 +543,7 @@ class Model(pl.LightningModule):
         opt, _ = self.optimizers()
 
         losses = {}
+
         if "language" in batch:
             lang_input = batch["language"]
             token_ids, attention_mask = (
@@ -688,14 +688,6 @@ class Model(pl.LightningModule):
 
         return opt, log_alpha_opt
 
-    def postprocess_action(self, action):
-        if self.output_gaussian:
-            mean, logvar = torch.chunk(action, 2, dim=-1)
-            std = torch.exp(0.5 * logvar)
-            dist = torch.distributions.Normal(loc=mean, scale=std)
-            action = dist.sample()
-        return action[0, -1]
-
     def tokenize(self, text: str = None):
         return self.tokenizer(text, return_tensors="pt")["input_ids"].to(self.device)
 
@@ -721,10 +713,11 @@ class Model(pl.LightningModule):
 
         while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
             # build masks
-            _, lang_token_logits, _ = self.forward_state_action_lang(
+            model_out, masks = self.forward_state_action_lang(
                 states=states, actions=actions, timesteps=timesteps, **kwargs
             )
-            next_token = lang_token_logits[:, -1:].argmax(-1)
+            output_dict = self.get_predictions(model_out, masks)
+            next_token = output_dict["lang_token_logits"][:, -1:].argmax(-1)
             curr_token = next_token.item()
 
             kwargs = self.update_masks(kwargs, next_pred="lang")
@@ -796,7 +789,7 @@ class Model(pl.LightningModule):
         prompt_str = self.tokenizer.decode(lang_token_ids[0], skip_special_tokens=True)
         return prompt_str, kwargs
 
-    def update_masks(self, masks, next_pred="binary"):
+    def update_masks(self, masks, pad_size=1):
         mask_keys = [
             "combined_state_mask",
             "combined_action_mask",
@@ -805,35 +798,10 @@ class Model(pl.LightningModule):
             "tokens",
         ]
 
-        zeros = torch.zeros((1, 1)).to(self.device)
-        ones = torch.ones((1, 1)).to(self.device)
+        zeros = torch.zeros((1, pad_size)).to(self.device)
 
-        # if we predict binary token next
-        # pad every mask and add a 1 for the state mask
-
-        if next_pred == "binary":
-            affected = ["combined_state_mask"]
-
-        # if we predict action next
-        # pad every mask and add 1 for the action mask
-
-        elif next_pred == "action":
-            affected = ["combined_action_mask"]
-
-        # if we predict lang next
-        # pad every mask and add 1 for lang_token_mask and token_type_ids
-
-        elif next_pred == "lang":
-            affected = ["lang_token_mask", "token_type_ids"]
-
-        # pad all unaffected masks
-        unaffected = list(set(mask_keys) - set(affected))
-        for mask_k in unaffected:
+        for mask_k in mask_keys:
             masks[mask_k] = torch.cat([masks[mask_k], zeros], dim=-1)
-
-        # for all affected masks, add 1
-        for mask_k in affected:
-            masks[mask_k] = torch.cat([masks[mask_k], ones], dim=-1)
 
         return masks
 
@@ -842,9 +810,11 @@ class Model(pl.LightningModule):
         states: torch.Tensor = None,
         actions: torch.Tensor = None,
         timesteps: torch.Tensor = None,
+        returns_to_go: torch.Tensor = None,
         next_prompt: torch.Tensor = None,
         predict_lang: bool = False,
         use_model_generate: bool = False,
+        use_means: bool = True,
         **kwargs,
     ):
         """
@@ -855,12 +825,16 @@ class Model(pl.LightningModule):
         :param Tensor actions:
             Tensor of size [T, action_dim]
         :param Tensor timesteps:
+            Tensor of size [1, T]
+        :param Tensor returns_to_go:
             Tensor of size [T, ]
         :param Tensor lang_token_ids:
             Optional tensor of size [1, N]
         :param Tensor token_type_ids:
             tensor of size [1, 2*T+N], stores the token types of full sequence
         """
+        action_output = AttrDict()
+
         if len(states.shape) == 2:
             states = states.reshape(1, -1, self.state_dim)
             actions = actions.reshape(1, -1, self.action_dim)
@@ -873,50 +847,67 @@ class Model(pl.LightningModule):
             [kwargs["action_mask"], torch.zeros((1, 1)).to(self.device)], dim=-1
         )
 
-        kwargs = self.update_masks(kwargs, next_pred="binary")
+        if predict_lang:
+            kwargs = self.update_masks(kwargs, pad_size=2)
 
-        # first forward predicts the binary token
-        _, _, aux_pred = self.forward_state_action_lang(
-            states=states,
-            actions=actions,
-            timesteps=timesteps,
-            **kwargs,  # masks contains the tokens
-        )
+            # first forward predicts the binary token
+            model_out, masks = self.forward_state_action_lang(
+                states=states,
+                actions=actions,
+                timesteps=timesteps,
+                **kwargs,  # masks contains the tokens
+            )
 
-        info = {"sigmoid_val": torch.sigmoid(aux_pred)[-1]}
-        aux_pred = (torch.sigmoid(aux_pred) > 0.5).int()
+            output_dict = self.get_predictions(model_out, masks)
 
-        if aux_pred[-1] and predict_lang:
-            print("Predicting new language...")
-            if use_model_generate:
-                # use huggingface generate function
-                # this only conditions on the previous language tokens and no behavior
-                prompt_str, kwargs = self.generate(**kwargs)
-            elif next_prompt:
-                prompt_str = next_prompt
-                lang_token_ids = self.tokenizer(prompt_str, return_tensors="pt")[
-                    "input_ids"
-                ].to(self.device)
-                kwargs = self.update_kwargs(lang_token_ids, kwargs)
-            else:
-                prompt_str, kwargs = self.get_prompt(
-                    states=states,
-                    actions=actions,
-                    timesteps=timesteps,
-                    **kwargs,
-                )
-            print(f"new prompt: {prompt_str}")
-            info["curr_skill"] = prompt_str
+            aux_pred = output_dict["aux_pred"]
+            info = {"sigmoid_val": torch.sigmoid(aux_pred)[-1]}
+            aux_pred = (torch.sigmoid(aux_pred) > 0.5).int()
 
-        kwargs = self.update_masks(kwargs, next_pred="action")
+            if aux_pred[-1] and predict_lang:
+                print("Predicting new language...")
+                if use_model_generate:
+                    # use huggingface generate function
+                    # this only conditions on the previous language tokens and no behavior
+                    prompt_str, kwargs = self.generate(**kwargs)
+                elif next_prompt:
+                    prompt_str = next_prompt
+                    lang_token_ids = self.tokenizer(prompt_str, return_tensors="pt")[
+                        "input_ids"
+                    ].to(self.device)
+                    kwargs = self.update_kwargs(lang_token_ids, kwargs)
+                else:
+                    prompt_str, kwargs = self.get_prompt(
+                        states=states,
+                        actions=actions,
+                        timesteps=timesteps,
+                        **kwargs,
+                    )
+                print(f"new prompt: {prompt_str}")
+                info["curr_skill"] = prompt_str
+
+        kwargs = self.update_masks(kwargs, pad_size=3)
+        kwargs["combined_state_mask"][:, -2] = 1
+        kwargs["combined_action_mask"][:, -1] = 1
         kwargs["action_mask"][:, -1] = 1
 
         # predict next action
-        action_preds, _, _ = self.forward_state_action_lang(
+        model_out, masks = self.forward_state_action_lang(
             states=states,
             actions=actions,
             timesteps=timesteps,
             **kwargs,
         )
 
-        return self.postprocess_action(action_preds), aux_pred, kwargs, info
+        output_dict = self.get_predictions(model_out, masks)
+
+        action_preds = output_dict["action_preds"]
+        if self.hparams.stochastic:
+            if use_means:
+                action_preds = output_dict.action_dist.mean
+
+        action_preds = action_preds[0, -1]
+        action_output.action_preds = action_preds
+        action_output.masks = kwargs
+
+        return action_output
