@@ -244,7 +244,9 @@ class SingleSequenceDataset(BaseDataset):
 
             i += chunk_size + j
 
-            indices = self.data["tokens"][r][self.data["combined_state_mask"][r].astype(np.bool)]
+            indices = self.data["tokens"][r][
+                self.data["combined_state_mask"][r].astype(np.bool)
+            ]
 
             for key in self.data_keys:
                 if self.data[f"all_{key}"] != []:

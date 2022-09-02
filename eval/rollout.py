@@ -234,6 +234,7 @@ class Rollout:
                 returns_to_go=returns_to_go,
                 next_prompt=next_prompt,
                 use_means=True,
+                multistream_inference=self.config.multistream_inference,
                 **masks,
             )
             masks = action_output.masks
@@ -251,7 +252,7 @@ class Rollout:
                 if action_output.binary_token[:, -1].item() == 1:
                     self.curr_idx += 1
 
-            action = action_output.action_preds
+            action = action_output.action_pred
             actions[-1] = action
             action = ten2ar(action.squeeze())
 

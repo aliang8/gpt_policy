@@ -56,7 +56,7 @@ class ALFREDDataset(BaseDataset):
         logger.info(f"num actions: {len(self.vocab_action)}")
 
         self.vocab_obj = torch.load(
-            os.path.join(self.hparams.ET_ROOT, "files/obj_cls.vocab")
+            os.path.join(self.hparams.data_dir, "obj_cls.vocab")
         )
         logger.info(f"num objects: {len(self.vocab_obj)}")
 
@@ -241,7 +241,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
         # create semantic sequences
         semantic_sequences = []
 
-        for idx, json_and_key in tqdm.tqdm(enumerate(self.jsons_and_keys[:200])):
+        for idx, json_and_key in tqdm.tqdm(enumerate(self.jsons_and_keys)):
             task_json, key = json_and_key
             image_feats = self.load_frames(key)
 
@@ -282,7 +282,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                     high_idx = action["high_idx"]
 
                     action = task_json["plan"]["low_actions"][num_steps]
-                    if self.has_interaction(action["api_action"]["action"]):
+                    if valid_interact[num_steps]:
                         obj_key = (
                             "receptacleObjectId"
                             if "receptacleObjectId" in action["api_action"]
@@ -322,7 +322,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                     states=states,
                     actions=actions,
                     interact_obj=np.array(obj_ids[s_idx]),
-                    valid_interact=valid_interact,
+                    valid_interact=np.array(valid_interact)[mask],
                     lang_token_ids=lang_token_ids,
                     lang_attention_mask=attn_mask,
                     timesteps=timesteps[mask],

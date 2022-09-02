@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -21,6 +22,7 @@ import collections
 import numpy as np
 import more_itertools as mit
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 import pytorch_lightning as pl
 from transformers import GPT2Model
@@ -29,12 +31,17 @@ from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead, BertOnlyNSPHead
 from utils.lang_utils import get_tokenizer, LANG_BOS_TOKEN, LANG_EOS_TOKEN
+from utils.stat_utils import merge_normal_dist
 
 # from model.modules.alfred_state_encoder import ALFREDStateEncoder
 
 from torch.distributions import Normal, Independent
 from torch.distributions.transformed_distribution import TransformedDistribution
 from torch.distributions.transforms import TanhTransform
+
+from utils.logger_utils import get_logger
+
+logger = get_logger("model")
 
 
 @MODEL_REGISTRY
@@ -92,6 +99,7 @@ class Model(pl.LightningModule):
 
         self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
         self.vocab_size = len(self.tokenizer.vocab)
+        logger.info(f"vocab size: {self.vocab_size}")
 
         self.model.transformer.wte = self.model.resize_token_embeddings(
             len(self.tokenizer)
@@ -176,19 +184,22 @@ class Model(pl.LightningModule):
             )
         self.hparams.update(extra_configs)
 
-    def get_masks(self, masks, tokens):
+    def get_masks(self, masks):
         # a bunch of useful masks
         for k, mask in masks.items():
-            if mask is not None:
+            if mask is not None and "mask" in k:
                 masks[k] = mask.bool()
 
+        tokens = masks["tokens"]
         # add additional masks
         masks["bos_token_mask"] = (tokens == 50261) & masks["lang_token_mask"]
-        masks["states_before_bos"] = torch.roll(masks["bos_token_mask"], -1, dims=1)
-        masks["states_before_bos"][:, -1] = False
+        masks["states_before_bos_mask"] = torch.roll(
+            masks["bos_token_mask"], -1, dims=1
+        )
+        masks["states_before_bos_mask"][:, -1] = False
         masks["eos_token_mask"] = (tokens == 50262) & masks["lang_token_mask"]
-        masks["actions_post_eos"] = torch.roll(masks["eos_token_mask"], 1, dims=1)
-        masks["actions_post_eos"][:, 0] = False
+        masks["actions_post_eos_mask"] = torch.roll(masks["eos_token_mask"], 1, dims=1)
+        masks["actions_post_eos_mask"][:, 0] = False
 
         return masks
 
@@ -225,7 +236,7 @@ class Model(pl.LightningModule):
         # predict actions
         # only use states not before a BOS token
         state_out = model_out[
-            masks["combined_state_mask"] & ~masks["states_before_bos"]
+            masks["combined_state_mask"] & ~masks["states_before_bos_mask"]
         ]
 
         if not self.training and masks["combined_state_mask"][:, -1].any():
@@ -242,7 +253,7 @@ class Model(pl.LightningModule):
                 )
 
                 actions_eos_mask = (
-                    masks["combined_action_mask"] & ~masks["actions_post_eos"]
+                    masks["combined_action_mask"] & ~masks["actions_post_eos_mask"]
                 )
 
                 (
@@ -252,8 +263,8 @@ class Model(pl.LightningModule):
 
                 action_preds_means[actions_eos_mask] = action_means
                 action_preds_stds[actions_eos_mask] = action_stds
-                action_preds_means[masks["actions_post_eos"]] = lang_action_means
-                action_preds_stds[masks["actions_post_eos"]] = lang_action_stds
+                action_preds_means[masks["actions_post_eos_mask"]] = lang_action_means
+                action_preds_stds[masks["actions_post_eos_mask"]] = lang_action_stds
 
                 action_preds_means = action_preds_means[masks["combined_action_mask"]]
                 action_preds_stds = action_preds_stds[masks["combined_action_mask"]]
@@ -268,6 +279,8 @@ class Model(pl.LightningModule):
             else:
                 action_preds = action_dist.sample()
         else:
+            action_preds = self.predict_action(state_out)
+
             # predict action from EOS token
             if masks["lang_token_mask"].sum() != 0:
                 eos_token_out = model_out[masks["eos_token_mask"]].reshape(
@@ -275,15 +288,13 @@ class Model(pl.LightningModule):
                 )
 
                 actions_eos_mask = (
-                    masks["combined_action_mask"] & ~masks["actions_post_eos"]
+                    masks["combined_action_mask"] & ~masks["actions_post_eos_mask"]
                 )
 
                 lang_act_preds = self.predict_action(eos_token_out)
                 action_preds_combined[actions_eos_mask] = action_preds
-                action_preds_combined[masks["actions_post_eos"]] = lang_act_preds
+                action_preds_combined[masks["actions_post_eos_mask"]] = lang_act_preds
                 action_preds = action_preds_combined[masks["combined_action_mask"]]
-            else:
-                action_preds = self.predict_action(state_out)
 
         action_preds_full[masks["action_mask"]] = action_preds
 
@@ -346,7 +357,6 @@ class Model(pl.LightningModule):
 
     def forward_state_action_lang(
         self,
-        tokens: torch.Tensor = None,
         states: torch.Tensor = None,
         timesteps: torch.Tensor = None,
         returns_to_go: torch.Tensor = None,
@@ -370,7 +380,8 @@ class Model(pl.LightningModule):
             - lang_token_logits_full: Tensor of size [batch_size x total_num_tokens x vocab_size]
             - aux_pred: Tensor of size [batch_size x ]
         """
-        masks = self.get_masks(kwargs, tokens)
+        masks = self.get_masks(kwargs)
+        tokens = masks["tokens"]
 
         # create tensor to store embeddings as a sequence
         state_action_lang = torch.zeros(
@@ -450,6 +461,7 @@ class Model(pl.LightningModule):
         action_log_probs: torch.Tensor,
         target_actions: torch.Tensor,
         action_mask: torch.Tensor,
+        **kwargs,
     ):
         # compute action prediction loss on valid actions
         if self.hparams.stochastic:
@@ -458,7 +470,7 @@ class Model(pl.LightningModule):
             action_pred_loss = self.action_loss_fn(action_preds, target_actions)
             action_pred_loss *= action_mask.unsqueeze(-1)
             action_pred_loss = action_pred_loss.mean()
-        return action_pred_loss
+        return {"action_pred_loss": action_pred_loss}
 
     def _compute_lang_pred_loss(
         self,
@@ -479,7 +491,7 @@ class Model(pl.LightningModule):
 
         lang_pred_loss = lang_pred_loss.mean()
 
-        return lang_pred_loss
+        return {"lang_pred_loss": lang_pred_loss}
 
     def _compute_aux_pred_loss(
         self,
@@ -559,12 +571,13 @@ class Model(pl.LightningModule):
 
             output_dict = self.get_predictions(model_out, masks)
 
-            lang_only_pred_loss = self._compute_lang_pred_loss(
+            lang_losses = self._compute_lang_pred_loss(
                 lang_token_logits=output_dict["lang_token_logits"],
                 target_lang_tokens=lang_input["input_ids"],
                 lang_token_mask=lang_input["attention_mask"].bool(),
             )
-            losses["lang_only_pred_loss"] = lang_only_pred_loss
+            for k, loss in lang_losses.items():
+                losses[k] = loss
 
         if "behavior" in batch:
             behavior_input = batch["behavior"]
@@ -577,20 +590,18 @@ class Model(pl.LightningModule):
                 target_actions=behavior_input["actions"],
             )
 
-            action_pred_loss = self._compute_action_pred_loss(
+            action_losses = self._compute_action_pred_loss(
                 action_preds=output_dict["action_preds"],
                 action_log_probs=output_dict["action_log_probs"],
                 target_actions=behavior_input["actions"],
                 action_mask=masks["action_mask"].bool(),
+                valid_interact=masks["valid_interact"].bool()
+                if "valid_interact" in masks
+                else None,
             )
-            losses["behavior_only_action_pred_loss"] = action_pred_loss
 
-            # aux_pred_loss = self._compute_aux_pred_loss(
-            #     aux_values=aux_pred,
-            #     target_aux_values=behavior_input["first_states"].float(),
-            #     mask=behavior_input["state_mask"].bool(),
-            # )
-            # losses["behavior_aux_pred_loss"] = aux_pred_loss
+            for k, loss in action_losses.items():
+                losses[f"behavior_only_{k}"] = loss
 
         if "paired" in batch:
             paired_input = batch["paired"]
@@ -602,12 +613,18 @@ class Model(pl.LightningModule):
                 target_actions=paired_input["actions"],
             )
 
-            action_pred_loss = self._compute_action_pred_loss(
+            action_losses = self._compute_action_pred_loss(
                 action_preds=output_dict["action_preds"],
                 action_log_probs=output_dict["action_log_probs"],
                 target_actions=paired_input["actions"],
                 action_mask=masks["action_mask"].bool(),
+                valid_interact=masks["valid_interact"].bool()
+                if "valid_interact" in masks
+                else None,
             )
+
+            for k, loss in action_losses.items():
+                losses[f"paired_{k}"] = loss
 
             # # entropy term
             # if self.hparams.target_entropy:
@@ -615,22 +632,20 @@ class Model(pl.LightningModule):
             # else:
             #     action_pred_loss -= entropy.mean()
 
-            losses["paired_action_pred_loss"] = action_pred_loss
-
             # log_alpha_loss = self.update_log_alpha(entropy)
 
             # losses["paired_log_alpha_loss"] = log_alpha_loss
 
             aux_pred_loss = self._compute_aux_pred_loss(
                 aux_values=output_dict["aux_pred"],
-                target_aux_values=masks["states_before_bos"].float(),
+                target_aux_values=masks["states_before_bos_mask"].float(),
                 mask=masks["combined_state_mask"],
             )
             losses["paired_aux_pred_loss"] = aux_pred_loss
 
             aux_pred_acc, aux_report = self._compute_aux_pred_stats(
                 aux_values=output_dict["aux_pred"],
-                target_aux_values=masks["states_before_bos"].float(),
+                target_aux_values=masks["states_before_bos_mask"].float(),
                 mask=masks["combined_state_mask"],
                 phase=phase,
             )
@@ -644,12 +659,13 @@ class Model(pl.LightningModule):
             if output_dict["lang_token_logits"] is not None and self.hparams.get(
                 "train_paired_lang", False
             ):
-                lang_pred_loss = self._compute_lang_pred_loss(
+                lang_losses = self._compute_lang_pred_loss(
                     lang_token_logits=output_dict["lang_token_logits"],
                     target_lang_tokens=paired_input["tokens"],
                     lang_token_mask=masks["lang_token_mask"],
                 )
-                losses["paired_lang_pred_loss"] = lang_pred_loss
+                for k, loss in action_losses.items():
+                    losses[f"paired_{k}"] = loss
 
         # add prefix to losses and multiply by weight
         losses_with_prefix = {
@@ -700,6 +716,7 @@ class Model(pl.LightningModule):
     ):
         """
         Implements greedy decoding.
+        Take weighted average between lang_only logits and paired lang logits
         """
         start = self.tokenize(LANG_BOS_TOKEN)
 
@@ -708,25 +725,57 @@ class Model(pl.LightningModule):
 
         kwargs["lang_token_ids"] = torch.cat([kwargs["lang_token_ids"], start], dim=-1)
 
-        kwargs = self.update_masks(kwargs, next_pred="lang")
-        kwargs["tokens"][:, -1] = start
+        num_tokens = 1
 
-        while curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]:
-            # build masks
+        while True:
+            kwargs = self.update_masks(kwargs, pad_size=1)
+            kwargs["tokens"][:, -1] = curr_token
+            kwargs["token_type_ids"][:, -1] = 1
+            kwargs["lang_token_mask"][:, -1] = 1
+
+            if curr_token == self.tokenizer.vocab[LANG_EOS_TOKEN] or num_tokens >= 10:
+                break
+
+            # language-only conditioning
+            masks = copy.deepcopy(kwargs)
+
+            # mask out all previous action predictions
+            masks["state_mask"] *= False
+            masks["action_mask"] *= False
+            masks["combined_state_mask"] *= False
+            masks["combined_action_mask"] *= False
+
+            model_out, masks = self.forward_state_action_lang(
+                states=states, actions=actions, timesteps=timesteps, **masks
+            )
+            output_dict = self.get_predictions(model_out, masks)
+            lang_only_next_token_logits = output_dict["lang_token_logits"][:, -1:]
+
+            # paired lang-behavior conditioning
             model_out, masks = self.forward_state_action_lang(
                 states=states, actions=actions, timesteps=timesteps, **kwargs
             )
-            output_dict = self.get_predictions(model_out, masks)
-            next_token = output_dict["lang_token_logits"][:, -1:].argmax(-1)
-            curr_token = next_token.item()
 
-            kwargs = self.update_masks(kwargs, next_pred="lang")
-            kwargs["tokens"][:, -1] = next_token
+            output_dict = self.get_predictions(model_out, masks)
+            paired_next_token_logits = output_dict["lang_token_logits"][:, -1:]
+
+            # weight lang_only and paired logits
+            lang_only_prob = F.softmax(lang_only_next_token_logits, dim=-1)
+            paired_prob = F.softmax(paired_next_token_logits, dim=-1)
+
+            weighted_prob = 0.5 * lang_only_prob + 0.5 * paired_prob
+            import ipdb
+
+            ipdb.set_trace()
+            next_token = weighted_prob.argmax(-1)
+            curr_token = next_token.item()
 
             # add next token
             kwargs["lang_token_ids"] = torch.cat(
                 [kwargs["lang_token_ids"], next_token], dim=-1
             )
+
+            num_tokens += 1
 
         # decode
         prompt_str = self.tokenizer.decode(
@@ -734,7 +783,11 @@ class Model(pl.LightningModule):
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         ).strip()
-        return prompt_str, kwargs
+
+        return {
+            "lang_skill": prompt_str,
+            "masks": kwargs,
+        }
 
     def update_kwargs(self, lang_token_ids, kwargs):
         new_tokens_length = lang_token_ids.shape[-1]
@@ -815,6 +868,7 @@ class Model(pl.LightningModule):
         predict_lang: bool = False,
         use_model_generate: bool = False,
         use_means: bool = True,
+        multistream_inference: bool = False,
         **kwargs,
     ):
         """
@@ -833,81 +887,108 @@ class Model(pl.LightningModule):
         :param Tensor token_type_ids:
             tensor of size [1, 2*T+N], stores the token types of full sequence
         """
+
+        # run three separate forward passes and
+        # take a weighted average between logits
+
         action_output = AttrDict()
+        masks = kwargs
 
-        if len(states.shape) == 2:
-            states = states.reshape(1, -1, self.state_dim)
-            actions = actions.reshape(1, -1, self.action_dim)
-
+        # first given the state, predict the binary token
+        # the binary token determines whether we predict
+        # language or actions in the next forward pass
         # add 1 for state and 0 for action
-        kwargs["state_mask"] = torch.cat(
-            [kwargs["state_mask"], torch.ones((1, 1)).to(self.device)], dim=-1
+        masks["state_mask"] = torch.cat(
+            [masks["state_mask"], torch.ones((1, 1)).to(self.device)], dim=-1
         )
-        kwargs["action_mask"] = torch.cat(
-            [kwargs["action_mask"], torch.zeros((1, 1)).to(self.device)], dim=-1
+        masks["action_mask"] = torch.cat(
+            [masks["action_mask"], torch.zeros((1, 1)).to(self.device)], dim=-1
         )
 
-        if predict_lang:
-            kwargs = self.update_masks(kwargs, pad_size=2)
+        masks = self.update_masks(masks, pad_size=2)
+        masks["combined_state_mask"][:, -1] = 1
 
-            # first forward predicts the binary token
-            model_out, masks = self.forward_state_action_lang(
-                states=states,
-                actions=actions,
-                timesteps=timesteps,
-                **kwargs,  # masks contains the tokens
-            )
+        # ============= BINARY TOKEN PREDICTION =============
 
-            output_dict = self.get_predictions(model_out, masks)
-
-            aux_pred = output_dict["aux_pred"]
-            info = {"sigmoid_val": torch.sigmoid(aux_pred)[-1]}
-            aux_pred = (torch.sigmoid(aux_pred) > 0.5).int()
-
-            if aux_pred[-1] and predict_lang:
-                print("Predicting new language...")
-                if use_model_generate:
-                    # use huggingface generate function
-                    # this only conditions on the previous language tokens and no behavior
-                    prompt_str, kwargs = self.generate(**kwargs)
-                elif next_prompt:
-                    prompt_str = next_prompt
-                    lang_token_ids = self.tokenizer(prompt_str, return_tensors="pt")[
-                        "input_ids"
-                    ].to(self.device)
-                    kwargs = self.update_kwargs(lang_token_ids, kwargs)
-                else:
-                    prompt_str, kwargs = self.get_prompt(
-                        states=states,
-                        actions=actions,
-                        timesteps=timesteps,
-                        **kwargs,
-                    )
-                print(f"new prompt: {prompt_str}")
-                info["curr_skill"] = prompt_str
-
-        kwargs = self.update_masks(kwargs, pad_size=3)
-        kwargs["combined_state_mask"][:, -2] = 1
-        kwargs["combined_action_mask"][:, -1] = 1
-        kwargs["action_mask"][:, -1] = 1
-
-        # predict next action
+        # first forward predicts the binary token
         model_out, masks = self.forward_state_action_lang(
             states=states,
             actions=actions,
             timesteps=timesteps,
-            **kwargs,
+            **masks,  # masks contains the tokens
         )
 
         output_dict = self.get_predictions(model_out, masks)
+        aux_pred = output_dict["aux_pred"]
+        aux_pred = (torch.sigmoid(aux_pred) > 0.5).int()[-1]
 
-        action_preds = output_dict["action_preds"]
+        time_to_predict_lang = (aux_pred == 1).item()
+
+        if time_to_predict_lang:
+            # predict next language instruction first
+            # and then predict action after
+            prompt_output = self.get_prompt(states, actions, timesteps, **masks)
+            logger.info(f"current skill: {prompt_output['lang_skill']}")
+
+            action_output.lang_skill = prompt_output["lang_skill"]
+            masks = prompt_output["masks"]
+
+        # predict next action
+        masks = self.update_masks(masks, pad_size=1)
+        masks["action_mask"][0, -1] = 1
+        masks["combined_action_mask"][0, -1] = 1
+
+        # ============== PAIRED ACTION PREDICTION ==============
+        model_out, masks = self.forward_state_action_lang(
+            states=states, actions=actions, timesteps=timesteps, **masks
+        )
+        output_dict = self.get_predictions(model_out, masks)
+
+        # 1 x T x action_dim
         if self.hparams.stochastic:
-            if use_means:
-                action_preds = output_dict.action_dist.mean
+            paired_action_pred = output_dict.action_preds
+            paired_action_dist = (
+                output_dict.action_dist
+            )  # this will return some normal dist for stochastic policies
 
-        action_preds = action_preds[0, -1]
-        action_output.action_preds = action_preds
-        action_output.masks = kwargs
+        # ============== BEHAVIOR_ONLY ACTION PREDICTION ==============
+        # behavior_only prediction, ignore previous language
+        masks_copy = copy.deepcopy(masks)
+        masks_copy["lang_token_mask"] *= False  # mask out prior language predictions
 
+        model_out, masks_copy = self.forward_state_action_lang(
+            states=states, actions=actions, timesteps=timesteps, **masks_copy
+        )
+        output_dict = self.get_predictions(model_out, masks_copy)
+
+        if self.hparams.stochastic:
+            behavior_only_action_pred = output_dict.action_preds
+            behavior_only_action_dist = output_dict.action_dist
+
+        if "continuous_actions" in self.hparams and not self.hparams.continuous_actions:
+            paired_action_probs = F.softmax(paired_action_pred)
+            behavior_only_action_probs = F.softmax(behavior_only_action_pred)
+
+            weighted_action_probs = (
+                0.5 * paired_action_probs + 0.5 * behavior_only_action_probs
+            )
+            action_pred = weighted_action_probs.argmax(-1)
+        else:
+            # if it is continuous
+            if self.hparams.stochastic:
+                # merge the two normal distributions
+                # might need to anneal the weighting over time
+                new_dist = merge_normal_dist(
+                    paired_action_dist, behavior_only_action_dist, n1=0.9, n2=0.1
+                )
+                action_pred = new_dist.sample()
+            else:
+                # if it isn't stochastic, not sure what to do???
+                import ipdb
+
+                ipdb.set_trace()
+
+        # should be (action_dim,)
+        action_output.action_pred = action_pred[-1]
+        action_output.masks = masks
         return action_output
