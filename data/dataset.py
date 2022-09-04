@@ -4,6 +4,9 @@ from torch.utils.data import random_split, DataLoader, Dataset
 from typing import Optional, Dict, List, Any
 from torch.utils.data.dataloader import default_collate
 from utils.lang_utils import get_tokenizer
+from utils.logger_utils import get_logger
+
+logger = get_logger("base_data")
 
 
 class BaseDataset(Dataset):
@@ -82,7 +85,7 @@ class SingleSequenceDataset(BaseDataset):
             "timesteps",
             "dones",
             "first_states",
-            "valid_interact",
+            "valid_interact_mask",
         ]
 
         self.mask_keys = [
@@ -106,12 +109,13 @@ class SingleSequenceDataset(BaseDataset):
         self._concatenate_sequence()
 
         # tokenize whatever possible and put into a long sequence
-        print("tokenizing data")
+        logger.info("tokenizing data")
         self._tokenize_sequence()
 
         # split data into evenly sized chunks for training
-        print("chunking data")
+        logger.info("chunking data")
         self.chunks = self._chunk_data()
+        logger.info(f"number of chunks: {len(self.chunks)}")
 
     def _concatenate_sequence(self):
         for seq in self.semantic_seqs:

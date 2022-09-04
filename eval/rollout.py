@@ -233,9 +233,8 @@ class Rollout:
                 timesteps=timesteps,
                 returns_to_go=returns_to_go,
                 next_prompt=next_prompt,
-                use_means=True,
-                multistream_inference=self.config.multistream_inference,
                 **masks,
+                **self.config,
             )
             masks = action_output.masks
 

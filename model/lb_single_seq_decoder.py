@@ -171,6 +171,19 @@ class Model(pl.LightningModule):
 
         self.automatic_optimization = False
 
+        self.mask_keys = [
+            "tokens",
+            "state_mask",
+            "action_mask",
+            "combined_state_mask",
+            "combined_action_mask",
+            "lang_token_mask",
+            "combined_rtg_mask",
+            "token_type_ids",
+            "valid_interact_mask",
+            "lang_token_ids",
+        ]
+
     def add_extra_configs(self, extra_configs):
         # language generation
         if "decode_params" in extra_configs:
@@ -184,24 +197,35 @@ class Model(pl.LightningModule):
             )
         self.hparams.update(extra_configs)
 
-    def get_masks(self, masks):
+    def get_masks(self, kwargs):
         # a bunch of useful masks
-        for k, mask in masks.items():
-            if mask is not None and "mask" in k:
-                masks[k] = mask.bool()
+        masks = {}
+        extra_config = {}
+        for k, kwarg in kwargs.items():
+            if kwarg is not None and k in self.mask_keys:
+                masks[k] = kwarg
+                if "mask" in k:
+                    masks[k] = kwarg.bool()
+
+            if k not in self.mask_keys and "mask" not in k:
+                extra_config[k] = kwarg
 
         tokens = masks["tokens"]
-        # add additional masks
-        masks["bos_token_mask"] = (tokens == 50261) & masks["lang_token_mask"]
-        masks["states_before_bos_mask"] = torch.roll(
-            masks["bos_token_mask"], -1, dims=1
-        )
-        masks["states_before_bos_mask"][:, -1] = False
-        masks["eos_token_mask"] = (tokens == 50262) & masks["lang_token_mask"]
-        masks["actions_post_eos_mask"] = torch.roll(masks["eos_token_mask"], 1, dims=1)
-        masks["actions_post_eos_mask"][:, 0] = False
 
-        return masks
+        if tokens.shape[-1] != 0:
+            # add additional masks
+            masks["bos_token_mask"] = (tokens == 50261) & masks["lang_token_mask"]
+            masks["states_before_bos_mask"] = torch.roll(
+                masks["bos_token_mask"], -1, dims=1
+            )
+            masks["states_before_bos_mask"][:, -1] = False
+            masks["eos_token_mask"] = (tokens == 50262) & masks["lang_token_mask"]
+            masks["actions_post_eos_mask"] = torch.roll(
+                masks["eos_token_mask"], 1, dims=1
+            )
+            masks["actions_post_eos_mask"][:, 0] = False
+
+        return masks, extra_config
 
     def get_stochastic_action_pred(self, model_input):
         # predict mean and logstd
@@ -380,7 +404,7 @@ class Model(pl.LightningModule):
             - lang_token_logits_full: Tensor of size [batch_size x total_num_tokens x vocab_size]
             - aux_pred: Tensor of size [batch_size x ]
         """
-        masks = self.get_masks(kwargs)
+        masks, extra_configs = self.get_masks(kwargs)
         tokens = masks["tokens"]
 
         # create tensor to store embeddings as a sequence
@@ -491,7 +515,7 @@ class Model(pl.LightningModule):
 
         lang_pred_loss = lang_pred_loss.mean()
 
-        return {"lang_pred_loss": lang_pred_loss}
+        return {"lang_only_pred_loss": lang_pred_loss}
 
     def _compute_aux_pred_loss(
         self,
@@ -763,10 +787,46 @@ class Model(pl.LightningModule):
             lang_only_prob = F.softmax(lang_only_next_token_logits, dim=-1)
             paired_prob = F.softmax(paired_next_token_logits, dim=-1)
 
-            weighted_prob = 0.5 * lang_only_prob + 0.5 * paired_prob
-            import ipdb
+            weighted_prob = (
+                kwargs["fixed_lang_only_prior_weight"] * lang_only_prob
+                + kwargs["fixed_paired_lang_prior_weight"] * paired_prob
+            )
 
-            ipdb.set_trace()
+            if (
+                kwargs["debug"] and curr_token != self.tokenizer.vocab[LANG_EOS_TOKEN]
+            ):  # DEBUG
+                k = 5
+                top_k = torch.topk(lang_only_prob, k=k)
+                next_token_candidates = (
+                    self.tokenizer.decode(top_k.indices[0][0]).strip().split(" ")
+                )
+
+                curr = kwargs["lang_token_ids"]
+
+                print("=" * 50)
+                print(f"curr sentence: {self.tokenizer.decode(curr[0])}")
+                print("lang-only next token: ")
+                for i, candidate in enumerate(next_token_candidates):
+                    print(f"\t{candidate}, {top_k.values[0][0][i].item()}")
+
+                top_k = torch.topk(paired_prob, k=k)
+                next_token_candidates = (
+                    self.tokenizer.decode(top_k.indices[0][0]).strip().split(" ")
+                )
+
+                print("paired next token: ")
+                for i, candidate in enumerate(next_token_candidates):
+                    print(f"\t{candidate}, {top_k.values[0][0][i].item()}")
+
+                top_k = torch.topk(weighted_prob, k=k)
+                next_token_candidates = (
+                    self.tokenizer.decode(top_k.indices[0][0]).strip().split(" ")
+                )
+
+                print("weighted next token: ")
+                for i, candidate in enumerate(next_token_candidates):
+                    print(f"\t{candidate}, {top_k.values[0][0][i].item()}")
+
             next_token = weighted_prob.argmax(-1)
             curr_token = next_token.item()
 
@@ -865,10 +925,6 @@ class Model(pl.LightningModule):
         timesteps: torch.Tensor = None,
         returns_to_go: torch.Tensor = None,
         next_prompt: torch.Tensor = None,
-        predict_lang: bool = False,
-        use_model_generate: bool = False,
-        use_means: bool = True,
-        multistream_inference: bool = False,
         **kwargs,
     ):
         """
@@ -892,7 +948,7 @@ class Model(pl.LightningModule):
         # take a weighted average between logits
 
         action_output = AttrDict()
-        masks = kwargs
+        masks, extra_configs = self.get_masks(kwargs)
 
         # first given the state, predict the binary token
         # the binary token determines whether we predict
@@ -927,9 +983,9 @@ class Model(pl.LightningModule):
         if time_to_predict_lang:
             # predict next language instruction first
             # and then predict action after
-            prompt_output = self.get_prompt(states, actions, timesteps, **masks)
-            logger.info(f"current skill: {prompt_output['lang_skill']}")
-
+            prompt_output = self.get_prompt(
+                states, actions, timesteps, **masks, **extra_configs
+            )
             action_output.lang_skill = prompt_output["lang_skill"]
             masks = prompt_output["masks"]
 
@@ -970,7 +1026,9 @@ class Model(pl.LightningModule):
             behavior_only_action_probs = F.softmax(behavior_only_action_pred)
 
             weighted_action_probs = (
-                0.5 * paired_action_probs + 0.5 * behavior_only_action_probs
+                extra_configs["fixed_paired_beh_prior_weight"] * paired_action_probs
+                + extra_configs["fixed_beh_only_prior_weight"]
+                * behavior_only_action_probs
             )
             action_pred = weighted_action_probs.argmax(-1)
         else:
@@ -979,7 +1037,10 @@ class Model(pl.LightningModule):
                 # merge the two normal distributions
                 # might need to anneal the weighting over time
                 new_dist = merge_normal_dist(
-                    paired_action_dist, behavior_only_action_dist, n1=0.9, n2=0.1
+                    paired_action_dist,
+                    behavior_only_action_dist,
+                    n1=extra_configs["fixed_paired_beh_prior_weight"],
+                    n2=extra_configs["fixed_beh_only_prior_weight"],
                 )
                 action_pred = new_dist.sample()
             else:

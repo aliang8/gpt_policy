@@ -141,8 +141,8 @@ class ALFREDDataset(BaseDataset):
 
             count = 0
             for idx in range(len(jsons)):
-                # if self.hparams.debug and count > 100:
-                #     break
+                if self.hparams.debug and count > 1000:
+                    break
 
                 key = "{:06}".format(idx).encode("ascii")
                 if key in jsons:
@@ -192,7 +192,7 @@ class ALFREDDataset(BaseDataset):
             lock=False,
             readahead=False,
             meminit=False,
-            max_readers=252,
+            max_readers=64,
         )
         cursor = database.begin(write=False)
         return database, cursor
@@ -263,26 +263,22 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
 
             # split actions based on skill alignment
             # last action is a <<stop>> action
-            action_ids = [
-                [a["action"] for a in a_list]
-                for a_list in task_json["num"]["action_low"]
-            ]
+            stop_tok = self.tokenizer(
+                add_start_and_end_str(["stop"])[0], return_tensors="np"
+            )
 
-            valid_interact = [
-                a["valid_interact"] for a in sum(task_json["num"]["action_low"], [])
-            ]
+            count = 0
+            all_seqs = task_json["num"]["action_low"]
 
-            num_semantic_skills = len(high_level_descs) + 1
-            obj_ids = [[] for i in range(num_semantic_skills)]
+            # add a new sequence for each high level action / skill
+            for s_idx, semantic_seq in enumerate(all_seqs):
+                action_ids = np.array([a["action"] for a in semantic_seq])
+                valid_interact = np.array([a["valid_interact"] for a in semantic_seq])
+                interact_obj_ids = []
 
-            # not sure why the alignment isn't correct here
-            num_steps = 0
-            for i, a_list in enumerate(task_json["num"]["action_low"][:-1]):
-                for action in a_list:
-                    high_idx = action["high_idx"]
-
-                    action = task_json["plan"]["low_actions"][num_steps]
-                    if valid_interact[num_steps]:
+                for idx, _ in enumerate(semantic_seq):
+                    if valid_interact[idx]:
+                        action = task_json["plan"]["low_actions"][count + idx]
                         obj_key = (
                             "receptacleObjectId"
                             if "receptacleObjectId" in action["api_action"]
@@ -290,28 +286,16 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                         )
                         object_class = action["api_action"][obj_key].split("|")[0]
                         interact_obj_id = self.vocab_obj.word2index(object_class)
-                        obj_ids[high_idx].append(interact_obj_id)
+                        interact_obj_ids.append(interact_obj_id)
                     else:
-                        obj_ids[high_idx].append(
-                            -1
-                        )  # 0 is the index for no object interacted
+                        interact_obj_ids.append(-1)
+                interact_obj_ids = np.array(interact_obj_ids)
 
-                    num_steps += 1
+                states = image_feats[np.arange(count, count + len(action_ids))]
+                actions = np.stack([action_ids, interact_obj_ids]).transpose(1, 0)
 
-            obj_ids[-1].append(-1)
-            low_to_high = np.array(task_json["num"]["low_to_high_idx"])
-            stop_tok = self.tokenizer(
-                add_start_and_end_str(["stop"])[0], return_tensors="np"
-            )
-            timesteps = np.arange(num_steps + 1)  # plus 1 for the stop action
-
-            # add a new sequence for each high level action / skill
-            for s_idx in range(num_semantic_skills):
-                mask = np.where(low_to_high == s_idx)
-                states = image_feats[mask]
-                actions = np.stack([action_ids[s_idx], obj_ids[s_idx]]).transpose(1, 0)
-
-                if s_idx >= len(tokens["input_ids"]):
+                if s_idx == len(all_seqs) - 1:
+                    interact_obj_ids = np.array([-1])
                     lang_token_ids = stop_tok["input_ids"][0]  # for the <<stop>> token
                     attn_mask = stop_tok["attention_mask"][0]
                 else:
@@ -321,12 +305,11 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                 sequence = AttrDict(
                     states=states,
                     actions=actions,
-                    interact_obj=np.array(obj_ids[s_idx]),
-                    valid_interact=np.array(valid_interact)[mask],
+                    valid_interact_mask=valid_interact,
                     lang_token_ids=lang_token_ids,
                     lang_attention_mask=attn_mask,
-                    timesteps=timesteps[mask],
-                    skills=low_to_high[mask],
+                    timesteps=np.arange(count, count + len(action_ids)),
+                    skills=np.zeros(len(action_ids)) + s_idx,
                 )
 
                 dones = self._add_done_info(sequence)
@@ -335,6 +318,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                 sequence.first_states[0] = 1
 
                 semantic_sequences.append(sequence)
+                count += len(actions)
 
         return semantic_sequences
 

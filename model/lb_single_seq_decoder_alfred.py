@@ -93,6 +93,11 @@ class Model(LBSingleSeqDecoder):
 
         mask = action_mask.flatten()
 
+        if any(action_gt[mask] >= self.num_actions):
+            import ipdb
+
+            ipdb.set_trace()
+
         # action prediction
         action_pred_loss = self.action_loss_fn(
             action_pred_logits[mask], action_gt[mask].long()
@@ -101,6 +106,15 @@ class Model(LBSingleSeqDecoder):
 
         # target object prediction
         valid_interact = kwargs["valid_interact"].flatten()
+        valid_interact = mask & valid_interact
+
+        if any(target_obj_gt[valid_interact].long() >= self.num_objects) or any(
+            target_obj_gt[valid_interact].long() == -1
+        ):
+            import ipdb
+
+            ipdb.set_trace()
+
         target_pred_loss = self.interact_obj_loss_fn(
             target_obj_pred_logits[valid_interact], target_obj_gt[valid_interact].long()
         )

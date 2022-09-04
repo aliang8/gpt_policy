@@ -211,22 +211,22 @@ class ALFREDLanguageBehaviorDataModule(LanguageBehaviorDataModule):
 
         if "paired" in self.hparams.modalities:
             p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])
-            p_cfg["partition"] = "train"
+            p_cfg.hparams.partition = "train"
             self.paired_train = instantiate(
                 p_cfg, dataset=self.dataset, _recursive_=False
             )
-            p_cfg["partition"] = "valid_seen"
+            p_cfg.hparams.partition = "valid_seen"
             self.paired_val = instantiate(
                 p_cfg, dataset=self.dataset, _recursive_=False
             )
 
         if "behavior" in self.hparams.modalities:
             b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
-            b_cfg["partition"] = "train"
+            b_cfg.hparams.partition = "train"
             self.behavior_train = instantiate(
                 b_cfg, dataset=self.dataset, _recursive_=False
             )
-            b_cfg["partition"] = "valid_seen"
+            b_cfg.hparams.partition = "valid_seen"
             self.behavior_val = instantiate(
                 b_cfg, dataset=self.dataset, _recursive_=False
             )
