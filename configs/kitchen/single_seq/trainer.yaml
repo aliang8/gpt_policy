@@ -1,13 +1,26 @@
 logger: 
   - _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: /data/anthony/gpt_transformer/logs
-    name: multistream_inf
+    name: multistream_inf_v4_normal
   - _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: ${logger[0].save_dir}
     name: ${logger[0].name}
     entity: clvr
     project: gpt_lang_transformer
-  
-# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/with_paired_lang_pred/with_paired_lang_pred-epoch=99-step=57000.ckpt
+
+callbacks: 
+  - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: ${logger[0].save_dir}/${logger[0].name}
+    save_top_k: 5         # save the last-k checkpoints
+    monitor: step 
+    mode: max
+    filename: ${logger[0].name}-{epoch:02d}-{step}
+  # - _target_: pytorch_lightning.callbacks.early_stopping.EarlyStopping
+  #   monitor: val/paired_action_pred_loss
+  #   mode: "min"
+  #   patience: 30
+  #   verbose: True
+
+resume_from_checkpoint: /data/anthony/gpt_transformer/logs/multistream_inf_v4_normal/multistream_inf_v4_normal-epoch=34-step=29050.ckpt
 max_epochs: 200
 # limit_train_batches: 2

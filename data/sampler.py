@@ -125,3 +125,29 @@ class LengthSortBatchSamplerWithFirstMaxLength(SubsetRandomSampler):
 
     def set_epoch(self, epoch: int):
         self.epoch = epoch
+
+
+class ImportanceSamplingBatchSampler(Sampler):
+    def __init__(self, trajectories, batch_size, drop_last=False):
+        self.trajectories = trajectories
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        # use the return_to_go for each trajectory as importance weighting
+        returns_to_go = [traj["returns_to_go"][0] for traj in trajectories]
+        self.importance_weight = returns_to_go / sum(returns_to_go)
+
+    def __len__(self):
+        num_batches = len(self.trajectories) // self.batch_size
+        if len(self.trajectories) % self.batch_size != 0 and not self.drop_last:
+            num_batches += 1
+        return num_batches
+
+    def __iter__(self):
+        # sample batch size of indices based on importance weight
+        batch_inds = np.random.choice(
+            np.arange(len(self.trajectories)),
+            size=min(len(self.trajectories), self.batch_size),
+            replace=True,
+            p=self.importance_weight,
+        )
+        return iter([batch_inds])

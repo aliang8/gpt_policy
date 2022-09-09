@@ -17,7 +17,7 @@ def save_video_sequence(file, frames, fps=10.0):
     video.release()
 
 
-def save_episode_as_video(episode, filename, caption=""):
+def save_episode_as_video(episode, filename, caption="", fps=1.0):
     frames = []
     font = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -42,11 +42,32 @@ def save_episode_as_video(episode, filename, caption=""):
         )
 
         text = ""
-        keys = ["curr_skill", "progress_pred", "binary_token"]
+
+        keys = [
+            "curr_instr",
+            "progress_pred",
+            "binary_token",
+            "action_str",
+            "obj_str",
+            "info.action_success",
+            "info.err",
+            "info.target_instance_id",
+            "info.num_fails",
+        ]
 
         for key in keys:
-            if key in episode:
-                text += f"{key}: {episode[key][t]}\n"
+            keys = key.split(".")
+
+            if len(keys) == 1:
+                if key in episode and episode[key][t] is not None:
+                    text += f"{key}: {episode[key][t]}\n"
+            elif len(keys) == 2:
+                if (
+                    keys[0] in episode
+                    and keys[1] in episode[keys[0]][t]
+                    and episode[keys[0]][t][keys[1]] is not None
+                ):
+                    text += f"{key}: {episode[keys[0]][t][keys[1]]}\n"
 
         # add caption text
         y0, dy = 50, 20
@@ -62,4 +83,4 @@ def save_episode_as_video(episode, filename, caption=""):
     # pad end
     for _ in range(25):
         frames.append(img)
-    save_video_sequence(filename, frames)
+    save_video_sequence(filename, frames, fps=fps)

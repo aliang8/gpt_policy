@@ -1,5 +1,5 @@
 sampler:
-  _target_: eval.rollout.Rollout
+  _target_: evals.rollout.Rollout
   config:
     max_episode_len: 280
     save_video: False
@@ -12,8 +12,25 @@ sampler:
     model_target: model.lb_single_seq_decoder
     use_model_generate: True
     reset_from_demonstration_state: False
+
+    use_mean: True
     predict_lang: False
     data_dir: /data/anthony/gpt_policy/data/kitchen
+
+    # eval stuff
+    multistream_inference: True
+
+    support_threshold: 5
+    fixed_lang_only_prior_weight: 0.8
+    fixed_paired_lang_prior_weight: 0.2
+
+    # fixed_lang_only_prior_weight: 0.0
+    # fixed_paired_lang_prior_weight: 0.0
+    
+    fixed_beh_only_prior_weight: 0.0
+    fixed_paired_beh_prior_weight: 1.0
+    
+    debug: False
 
 env:
   _target_: envs.kitchen.KitchenEnv

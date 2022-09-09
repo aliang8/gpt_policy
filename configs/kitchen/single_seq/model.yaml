@@ -11,7 +11,7 @@ model_conf:
   log_std_max: 2
 
   # loss weighting
-  lang_only_pred_loss_weight: 1.0
+  lang_pred_loss_weight: 1.0
 
   behavior_only_action_pred_loss_weight: 1.0
   aux_pred_loss_weight: 1.0

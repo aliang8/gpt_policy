@@ -1,13 +1,13 @@
 logger: 
   - _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: /data/anthony/gpt_transformer/logs
-    name: test
+    name: alfred_behavior_only_BC
   - _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: ${logger[0].save_dir}
     name: ${logger[0].name}
     entity: clvr
     project: gpt_lang_transformer
   
-# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/alfred_language_beh_BC/alfred_language_beh_BC-epoch=01-step=4400.ckpt
+# resume_from_checkpoint: /data/anthony/gpt_transformer/logs/alfred_full_v4/alfred_full_v4-epoch=22-step=50600.ckpt
 max_epochs: 200
 # limit_train_batches: 2

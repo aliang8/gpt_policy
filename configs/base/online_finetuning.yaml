@@ -1,0 +1,5 @@
+online_finetuning_conf: 
+  max_iters: 5
+  num_steps_per_iter: 1000
+  log_wandb: False
+  online_buffer_size: 1000 # keep top N trajectories to start

@@ -14,4 +14,12 @@ model_conf:
   train_paired_lang: True
   # pred_progress: True
   max_ep_len: 1000
-  load_pretrained_lm_weights: True
+  load_pretrained_lm_weights: False
+  stochastic: False 
+  continuous_actions: False
+
+  # gpt2 config
+  decoder_config:
+    # dropout: 0.3
+    n_layer: 12
+    n_head: 12

@@ -14,6 +14,7 @@ from data.dataset import (
     BaseDataset,
     SingleSequenceDataset,
     SingleSequenceBinaryDataset,
+    TrajectoryDataset,
 )
 
 from pytorch_lightning.utilities.parsing import AttributeDict as AttrDict
@@ -27,8 +28,8 @@ from typing import Optional, Dict, List, Any
 # from ai2thor.interact import DefaultActions
 import sys
 
-sys.path.append("/data/anthony/alfred")
-import gen.constants as constants
+# sys.path.append("/data/anthony/alfred")
+import utils.thor_constants as constants
 
 from utils.logger_utils import get_logger
 
@@ -36,8 +37,8 @@ logger = get_logger("alfred_data")
 
 
 class ALFREDDataset(BaseDataset):
-    def __init__(self, hparams: Dict, *args, **kwargs):
-        self.hparams = hparams
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
         start = time.time()
         logger.info("loading dataset")
@@ -59,6 +60,7 @@ class ALFREDDataset(BaseDataset):
             os.path.join(self.hparams.data_dir, "obj_cls.vocab")
         )
         logger.info(f"num objects: {len(self.vocab_obj)}")
+        self.partition = self.hparams.partition
 
     # def encode_list_objects(self, list_objs, max_visible_objects):
     #     obj_encodings = []
@@ -141,8 +143,8 @@ class ALFREDDataset(BaseDataset):
 
             count = 0
             for idx in range(len(jsons)):
-                if self.hparams.debug and count > 1000:
-                    break
+                # if count > 100:
+                #     break
 
                 key = "{:06}".format(idx).encode("ascii")
                 if key in jsons:
@@ -208,8 +210,8 @@ class ALFREDDataset(BaseDataset):
 
 
 class SemanticSkillsALFREDDataset(ALFREDDataset):
-    def __init__(self, hparams: Dict, *args, **kwargs):
-        super().__init__(hparams, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         # self.tokenizer = get_tokenizer(self.hparams.decoder_model_cls)
         # obj_tokens = self.tokenizer(constants.OBJECTS, return_tensors="np")["input_ids"]
@@ -237,13 +239,25 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
         else:
             return True
 
+    def _split_by_trajectories(self):
+        semantic_seqs = self._split_by_semantic_skills()
+
+        flatten_semantic_seqs = []
+        for i, traj in semantic_seqs:
+            flatten_semantic_seqs.extend(traj)
+
+        return flatten_semantic_seqs
+
     def _split_by_semantic_skills(self):
         # create semantic sequences
-        semantic_sequences = []
+        trajectories = []
 
         for idx, json_and_key in tqdm.tqdm(enumerate(self.jsons_and_keys)):
+            # create new trajectory
+            trajectory = []
+
             task_json, key = json_and_key
-            image_feats = self.load_frames(key)
+            # image_feats = self.load_frames(key)
 
             anns = task_json["turk_annotations"][
                 "anns"
@@ -253,6 +267,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
             ann = random.choice(anns)
             task_desc = ann["task_desc"]
             high_level_descs = ann["high_descs"]
+            high_level_descs.append(["stop"])
             high_level_descs = add_start_and_end_str(high_level_descs)
 
             # tokenize language
@@ -261,13 +276,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
 
             high_level_plan = task_json["plan"]["high_pddl"]
 
-            # split actions based on skill alignment
-            # last action is a <<stop>> action
-            stop_tok = self.tokenizer(
-                add_start_and_end_str(["stop"])[0], return_tensors="np"
-            )
-
-            count = 0
+            s_count = 0
             all_seqs = task_json["num"]["action_low"]
 
             # add a new sequence for each high level action / skill
@@ -278,7 +287,7 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
 
                 for idx, _ in enumerate(semantic_seq):
                     if valid_interact[idx]:
-                        action = task_json["plan"]["low_actions"][count + idx]
+                        action = task_json["plan"]["low_actions"][s_count + idx]
                         obj_key = (
                             "receptacleObjectId"
                             if "receptacleObjectId" in action["api_action"]
@@ -291,43 +300,48 @@ class SemanticSkillsALFREDDataset(ALFREDDataset):
                         interact_obj_ids.append(-1)
                 interact_obj_ids = np.array(interact_obj_ids)
 
-                states = image_feats[np.arange(count, count + len(action_ids))]
+                # states = image_feats[np.arange(count, count + len(action_ids))]
                 actions = np.stack([action_ids, interact_obj_ids]).transpose(1, 0)
 
-                if s_idx == len(all_seqs) - 1:
-                    interact_obj_ids = np.array([-1])
-                    lang_token_ids = stop_tok["input_ids"][0]  # for the <<stop>> token
-                    attn_mask = stop_tok["attention_mask"][0]
-                else:
-                    lang_token_ids = tokens["input_ids"][s_idx]
-                    attn_mask = tokens["attention_mask"][s_idx]
+                lang_token_ids = tokens["input_ids"][s_idx]
+                attn_mask = tokens["attention_mask"][s_idx]
 
                 sequence = AttrDict(
-                    states=states,
+                    # states=states,
+                    states=np.arange(s_count, s_count + len(action_ids)),
                     actions=actions,
                     valid_interact_mask=valid_interact,
                     lang_token_ids=lang_token_ids,
                     lang_attention_mask=attn_mask,
-                    timesteps=np.arange(count, count + len(action_ids)),
+                    timesteps=np.arange(s_count, s_count + len(action_ids)),
                     skills=np.zeros(len(action_ids)) + s_idx,
+                    image_key=np.array([int(key)]),
+                    instr=high_level_descs[s_idx],
                 )
 
                 dones = self._add_done_info(sequence)
-                sequence.done = dones
-                sequence.first_states = np.zeros_like(sequence.done)
+                sequence.dones = dones
+                sequence.first_states = np.zeros_like(sequence.dones)
                 sequence.first_states[0] = 1
 
-                semantic_sequences.append(sequence)
-                count += len(actions)
+                trajectory.append(sequence)
+                s_count += len(actions)
 
-        return semantic_sequences
+            trajectories.append(trajectory)
+
+        return trajectories
 
 
 class ALFREDSingleSequenceDataset(SingleSequenceDataset, SemanticSkillsALFREDDataset):
-    def __init__(self, hparams: Dict, dataset: List, *args, **kwargs):
-        self.hparams = hparams
-        SemanticSkillsALFREDDataset.__init__(self, hparams, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        SemanticSkillsALFREDDataset.__init__(self, *args, **kwargs)
         SingleSequenceDataset.__init__(self, *args, **kwargs)
+
+
+class ALFREDTrajectoryDataset(TrajectoryDataset, SemanticSkillsALFREDDataset):
+    def __init__(self, *args, **kwargs):
+        SemanticSkillsALFREDDataset.__init__(self, *args, **kwargs)
+        TrajectoryDataset.__init__(self, *args, **kwargs)
 
 
 if __name__ == "__main__":
@@ -345,7 +359,7 @@ if __name__ == "__main__":
         return_conditioned=True,
         input_format="v1",
     )
-    dataset = ALFREDSingleSequenceDataset(hparams=hparams, dataset=None)
+    dataset = ALFREDTrajectoryDataset(hparams=hparams, dataset=None)
 
     for data in dataset:
         for k, v in data.items():
@@ -354,6 +368,15 @@ if __name__ == "__main__":
 
                 ipdb.set_trace()
             assert v is not None
+
+    from utils.data_utils import collate_fn
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=5, collate_fn=collate_fn
+    )
+
+    # for i, batch in enumerate(dataloader):
+    #     print(batch.keys())
 
     import ipdb
 

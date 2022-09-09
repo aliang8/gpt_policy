@@ -10,4 +10,4 @@ logger:
 
 
 # resume_from_checkpoint: /data/anthony/gpt_transformer/logs/behavior_only/behavior_only-epoch=99-step=54000.ckpt
-max_epochs: 100
+# max_epochs: 100

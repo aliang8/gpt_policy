@@ -1,45 +1,37 @@
 _target_: data.language_behavior.ALFREDLanguageBehaviorDataModule
 data_conf: 
   env_name: alfred
-  split:
-    train: 0.8
-    val: 0.2
-  batch_size: 4
-  data_dir: /data/anthony/ET/data/small_test
+  data_dir: /misery/anthony/alfred_orig_lmdb_2.1.0
   modalities:
     # - behavior
     - paired
     # - language
-
-  dataset_cls: # config for the dataset
-    _target_: data.alfred.ALFREDSingleSequenceDataset
+    
+  paired_dataset_cls: # config for the dataset
+    _target_: data.alfred.ALFREDTrajectoryDataset
     hparams:
       load_frac_done: True
       load_lang: True
       decoder_model_cls: gpt2
       subseq_len: 10
       data_dir: ${data_conf.data_dir} 
-      ET_ROOT: /data/anthony/ET
-      partition: valid_seen
+      partition: train
       add_lang_before_state: False
-      discretize_actions: False
-      num_bins: 256
-      prepend_lang: True
       chunk_size: 512
-      debug: True
+      debug: False
+      return_conditioned: True
+      input_format: v1
   
   behavior_dataset_cls: 
-    _target_: data.alfred.ALFREDSingleSequenceDataset
+    _target_: data.alfred.ALFREDTrajectoryDataset
     hparams: 
       load_frac_done: True
       load_lang: False
       data_dir: ${data_conf.data_dir} 
-      partition: valid_seen
+      partition: train
       discretize_actions: False
       num_bins: 256
-      chunk_size: 512
-
-  paired_dataset_cls: ${data_conf.dataset_cls}
+      chunk_size: ${data_conf.paired_dataset_cls.hparams.chunk_size}
 
   language_datasets: 
     - data.language.LanguageDataset
@@ -51,8 +43,8 @@ data_conf:
       mapping_file: text_to_emb.pkl
       annotation_file: annotations.json
       language_skills_file: skills_small.txt
-      chunk_size: ${data_conf.dataset_cls.hparams.chunk_size}
-      decoder_model_cls: ${data_conf.dataset_cls.hparams.decoder_model_cls}
+      chunk_size: ${data_conf.paired_dataset_cls.hparams.chunk_size}
+      decoder_model_cls: ${data_conf.paired_dataset_cls.hparams.decoder_model_cls}
       
       # wikihow specific
       wikihow_data_dir: /data/anthony/wikihow 
@@ -60,6 +52,6 @@ data_conf:
 
   dataloader_cls:
     _target_: data.sampler.RepeatedDataLoader
-    n_repeat: 10
+    n_repeat: 5
     num_workers: 4
     batch_size: 6

@@ -1,5 +1,8 @@
 import abc
+import copy
+from tqdm import tqdm
 import numpy as np
+import torch
 from torch.utils.data import random_split, DataLoader, Dataset
 from typing import Optional, Dict, List, Any
 from torch.utils.data.dataloader import default_collate
@@ -10,6 +13,9 @@ logger = get_logger("base_data")
 
 
 class BaseDataset(Dataset):
+    def __init__(self, hparams, **kwargs):
+        self.hparams = hparams
+
     def get_sampler(self, indices):
         return None  # use default batch sampler
 
@@ -31,7 +37,7 @@ class BaseDataset(Dataset):
         return
 
     @abc.abstractmethod
-    def _tokenize_sequence(self):
+    def _tokenize_sequence(self, data, semantic_seqs):
         """
         Take semantic skill sequences and concatenate them together into a long
         sequence of tokens. Also create masks for each data modality.
@@ -77,6 +83,7 @@ class SingleSequenceDataset(BaseDataset):
     """
 
     def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.data = {}
 
         self.data_keys = [
@@ -84,8 +91,10 @@ class SingleSequenceDataset(BaseDataset):
             "actions",
             "timesteps",
             "dones",
+            "returns_to_go",
             "first_states",
             "valid_interact_mask",
+            "image_key",
         ]
 
         self.mask_keys = [
@@ -103,33 +112,37 @@ class SingleSequenceDataset(BaseDataset):
         for key in self.mask_keys:
             self.data[key] = []
 
+        self.chunks = []
+
+    def prepare_data(self):
         # first split the demonstrations into individual semantic skills
         self.semantic_seqs = self._split_by_semantic_skills()
 
-        self._concatenate_sequence()
+        self.data = self._concatenate_sequence(self.data, self.semantic_seqs)
 
         # tokenize whatever possible and put into a long sequence
         logger.info("tokenizing data")
-        self._tokenize_sequence()
+        self.data = self._tokenize_sequence(self.data, self.semantic_seqs)
 
         # split data into evenly sized chunks for training
         logger.info("chunking data")
         self.chunks = self._chunk_data()
         logger.info(f"number of chunks: {len(self.chunks)}")
 
-    def _concatenate_sequence(self):
-        for seq in self.semantic_seqs:
+    def _concatenate_sequence(self, data, semantic_seqs):
+        for seq in semantic_seqs:
             for key in self.data_keys:
                 if key in seq:
-                    self.data[f"all_{key}"].append(seq[key])
+                    data[f"all_{key}"].append(seq[key])
+        return data
 
-    def _tokenize_sequence(self):
+    def _tokenize_sequence(self, data, semantic_seqs):
         # combine every state/action/language into a long sequence
         # then split tokens into chunk for each data sample
         # create masks to index the language, state, and actions separately
         start = 0
 
-        for seq in self.semantic_seqs:
+        for seq in semantic_seqs:
             # ignore pads
             if self.hparams.load_lang:
                 lang_tokens, lang_attn = (
@@ -208,20 +221,48 @@ class SingleSequenceDataset(BaseDataset):
 
             # add to list
             token_type_id = 0 * state_mask_ + 0 * action_mask_ + 1 * lang_token_mask_
-            self.data["tokens"].append(concat_sequence)
-            self.data["token_type_ids"].append(token_type_id)
-            self.data["combined_state_mask"].append(state_mask_)
-            self.data["combined_action_mask"].append(action_mask_)
-            self.data["lang_token_mask"].append(lang_token_mask_)
+            data["tokens"].append(concat_sequence)
+            data["token_type_ids"].append(token_type_id)
+            data["combined_state_mask"].append(state_mask_)
+            data["combined_action_mask"].append(action_mask_)
+            data["lang_token_mask"].append(lang_token_mask_)
 
             if self.hparams.return_conditioned:
-                self.data["combined_rtg_mask"].append(rtg_mask_)
+                data["combined_rtg_mask"].append(rtg_mask_)
 
             start += T
 
-        for k, v in self.data.items():
+        # this is slow
+        # for k, v in self.data.items():
+        #     if len(v) > 0:
+        #         self.data[k] = np.concatenate(v)
+
+        # one memory allocation
+        res = {}
+        for k, v in data.items():
+            total_len = sum([v_.shape[0] for v_ in v])
             if len(v) > 0:
-                self.data[k] = np.concatenate(v)
+                if isinstance(v[0], np.ndarray):
+                    res[k] = np.zeros((total_len, *v[0].shape[1:]))
+                elif isinstance(v[0], torch.Tensor):
+                    res[k] = torch.zeros((total_len, *v[0].shape[1:]))
+                else:
+                    import ipdb
+
+                    ipdb.set_trace()
+
+        for k, v in data.items():
+            itr = 0
+            for v_ in v:
+                if isinstance(v_, np.ndarray) or isinstance(v_, torch.Tensor):
+                    res[k][itr : itr + v_.shape[0]] = v_
+                    itr += v_.shape[0]
+                else:
+                    import ipdb
+
+                    ipdb.set_trace()
+
+        return res
 
     def _chunk_data(self):
         chunks = []
@@ -363,4 +404,46 @@ class SingleSequenceBinaryDataset(SingleSequenceDataset):
                 self.data[k] = np.concatenate(v)
 
 
-# class MultiModalSingleSequenceDataset(SingleSequenceDataset):
+class TrajectoryDataset(SingleSequenceDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.trajectories = []
+
+    def prepare_data(self):
+        self.trajectories = self._split_into_trajectories()
+        logger.info(f"found {len(self.trajectories)} trajectories")
+        self.trajectories = self.add_masks(self.trajectories)
+
+    def add_masks(self, trajectories):
+        for idx in range(len(trajectories)):
+            traj = trajectories[idx]
+
+            traj_data = copy.deepcopy(self.data)
+            traj_data = self._concatenate_sequence(traj_data, traj)
+            traj_data = self._tokenize_sequence(traj_data, traj)
+
+            res = {}
+            for k in self.data_keys:
+                if f"all_{k}" in traj_data:
+                    res[k] = traj_data[f"all_{k}"]
+
+            for k in self.mask_keys:
+                if k in traj_data:
+                    res[k] = traj_data[k]
+
+            # add state and action mask
+            res.update(
+                {
+                    "state_mask": np.ones(len(res["states"])),
+                    "action_mask": np.ones(len(res["actions"])),
+                }
+            )
+
+            trajectories[idx] = res
+        return trajectories
+
+    def __len__(self):
+        return len(self.trajectories)
+
+    def __getitem__(self, idx):
+        return self.trajectories[idx]

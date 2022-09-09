@@ -54,6 +54,8 @@ class LanguageBehaviorDataModule(pl.LightningDataModule):
             self.dataset = None
 
     def setup(self, stage: Optional[str] = None):
+        self.datasets = {}
+
         if "language" in self.hparams.modalities:
             # merge multiple language datasets
             l_datasets = []
@@ -63,130 +65,65 @@ class LanguageBehaviorDataModule(pl.LightningDataModule):
                 l_datasets.append(instantiate(l_cfg, _recursive_=False))
 
             self.lang_dataset = ConcatDataset(l_datasets)
+            self.datasets["language"] = self.lang_dataset
 
-        if "paired" in self.hparams.modalities:
-            p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])
-            self.paired_dataset = instantiate(
-                p_cfg, dataset=self.dataset, _recursive_=False
-            )
-
-        if "behavior" in self.hparams.modalities:
-            b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
-            self.behavior_dataset = instantiate(
-                b_cfg, dataset=self.dataset, _recursive_=False
-            )
+        for modality in ["paired", "behavior"]:
+            if modality in self.hparams.modalities:
+                cfg = OmegaConf.create(self.hparams[f"{modality}_dataset_cls"])
+                self.datasets[modality] = instantiate(
+                    cfg, dataset=self.dataset, _recursive_=False
+                )
+                self.datasets[modality].prepare_data()
 
         # Assign train/val datasets for use in dataloaders
+        generator = torch.Generator().manual_seed(self.hparams.seed)
+
         if stage == "fit" or stage is None:
-            if "language" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.lang_dataset)
-                self.lang_train, self.lang_val = random_split(
-                    self.lang_dataset, [num_tr, num_val]
+            for k, dataset in self.datasets.items():
+                num_tr, num_val = self.split_tr_and_val(dataset)
+                train_split, val_split = random_split(
+                    dataset, [num_tr, num_val], generator=generator
                 )
-                self.logger.info(f"Language dataset train size: {num_tr}")
-                self.logger.info(f"Language dataset val size: {num_val}")
+                self.datasets[f"train/{k}"] = train_split
+                self.datasets[f"val/{k}"] = val_split
 
-            if "paired" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.paired_dataset)
-                self.paired_train, self.paired_val = random_split(
-                    self.paired_dataset, [num_tr, num_val]
-                )
+                self.logger.info(f"{k} dataset train size: {num_tr}")
+                self.logger.info(f"{k} dataset val size: {num_val}")
 
-                self.logger.info(f"Paired dataset train size: {num_tr}")
-                self.logger.info(f"Paired dataset val size: {num_val}")
-
-            if "behavior" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.behavior_dataset)
-                self.behavior_train, self.behavior_val = random_split(
-                    self.behavior_dataset, [num_tr, num_val]
-                )
-
-                self.logger.info(f"Behavior dataset train size: {num_tr}")
-                self.logger.info(f"Behavior dataset val size: {num_val}")
-
-    def train_dataloader(self):
+    def train_dataloader(self, phase="train"):
         cfg = OmegaConf.create(self.hparams["dataloader_cls"])
 
         loaders = {}
-        if "language" in self.hparams.modalities:
-            lang_dl = instantiate(
-                cfg,
-                dataset=self.lang_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["language"] = lang_dl
 
-        if "behavior" in self.hparams.modalities:
-            behavior_dl = instantiate(
-                cfg,
-                dataset=self.behavior_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["behavior"] = behavior_dl
+        for k, dataset in self.datasets.items():
+            if phase in k:
+                modality = k.split("/")[-1]
+                batch_sampler = None
+                if hasattr(dataset, "indices"):
+                    batch_sampler = self.datasets[modality].get_sampler(dataset.indices)
+                    extra_kwargs = dict(batch_sampler=batch_sampler)
+                else:
+                    extra_kwargs = dict(batch_sampler=None)
 
-        if "paired" in self.hparams.modalities:
-            batch_sampler = None
-            if hasattr(self.paired_train, "indices"):
-                batch_sampler = self.paired_dataset.get_sampler(
-                    self.paired_train.indices
+                if modality in ["paired", "behavior"]:
+                    extra_kwargs["collate_fn"] = collate_fn
+
+                data_loader = instantiate(
+                    cfg,
+                    dataset=dataset,
+                    pin_memory=True,
+                    worker_init_fn=lambda x: np.random.seed(
+                        np.random.randint(65536) + x
+                    ),
+                    **extra_kwargs,
                 )
-            paired_dl = instantiate(
-                cfg,
-                dataset=self.paired_train,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=batch_sampler,
-                collate_fn=collate_fn,
-            )
-            loaders["paired"] = paired_dl
+                loaders[modality] = data_loader
 
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader
 
     def val_dataloader(self):
-        cfg = OmegaConf.create(self.hparams["dataloader_cls"])
-        # cfg['n_repeat'] = 1
-
-        loaders = {}
-        if "language" in self.hparams.modalities:
-            lang_dl = instantiate(
-                cfg,
-                dataset=self.lang_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            if len(lang_dl) > 0:
-                loaders["language"] = lang_dl
-
-        if "behavior" in self.hparams.modalities:
-            behavior_dl = instantiate(
-                cfg,
-                dataset=self.behavior_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-            )
-            loaders["behavior"] = behavior_dl
-
-        if "paired" in self.hparams.modalities:
-            batch_sampler = None
-            if hasattr(self.paired_train, "indices"):
-                batch_sampler = self.paired_dataset.get_sampler(
-                    self.paired_train.indices
-                )
-            paired_dl = instantiate(
-                cfg,
-                dataset=self.paired_val,
-                pin_memory=True,
-                worker_init_fn=lambda x: np.random.seed(np.random.randint(65536) + x),
-                batch_sampler=batch_sampler,
-                collate_fn=collate_fn,
-            )
-            loaders["paired"] = paired_dl
-
-        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
-        return combined_loader
+        return self.train_dataloader(phase="val")
 
 
 @DATAMODULE_REGISTRY
@@ -199,6 +136,8 @@ class ALFREDLanguageBehaviorDataModule(LanguageBehaviorDataModule):
         self.dataset = None
 
     def setup(self, stage: Optional[str] = None):
+        self.datasets = {}
+
         if "language" in self.hparams.modalities:
             # merge multiple language datasets
             l_datasets = []
@@ -207,36 +146,33 @@ class ALFREDLanguageBehaviorDataModule(LanguageBehaviorDataModule):
                 l_cfg = OmegaConf.create(self.hparams["language_dataset_cls"])
                 l_datasets.append(instantiate(l_cfg, _recursive_=False))
 
-            self.lang_dataset = ConcatDataset(l_datasets)
+            self.datasets["language"] = ConcatDataset(l_datasets)
 
-        if "paired" in self.hparams.modalities:
-            p_cfg = OmegaConf.create(self.hparams["paired_dataset_cls"])
-            p_cfg.hparams.partition = "train"
-            self.paired_train = instantiate(
-                p_cfg, dataset=self.dataset, _recursive_=False
-            )
-            p_cfg.hparams.partition = "valid_seen"
-            self.paired_val = instantiate(
-                p_cfg, dataset=self.dataset, _recursive_=False
-            )
-
-        if "behavior" in self.hparams.modalities:
-            b_cfg = OmegaConf.create(self.hparams["behavior_dataset_cls"])
-            b_cfg.hparams.partition = "train"
-            self.behavior_train = instantiate(
-                b_cfg, dataset=self.dataset, _recursive_=False
-            )
-            b_cfg.hparams.partition = "valid_seen"
-            self.behavior_val = instantiate(
-                b_cfg, dataset=self.dataset, _recursive_=False
-            )
+        for modality in ["paired", "behavior"]:
+            if modality in self.hparams.modalities:
+                cfg = OmegaConf.create(self.hparams[f"{modality}_dataset_cls"])
+                cfg.hparams.partition = "train"
+                self.datasets[f"train/{modality}"] = instantiate(
+                    cfg, dataset=self.dataset, _recursive_=False
+                )
+                self.datasets[f"train/{modality}"].prepare_data()
+                cfg.hparams.partition = "valid_seen"
+                self.datasets[f"val/{modality}"] = instantiate(
+                    cfg, dataset=self.dataset, _recursive_=False
+                )
+                self.datasets[f"val/{modality}"].prepare_data()
 
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
             if "language" in self.hparams.modalities:
-                num_tr, num_val = self.split_tr_and_val(self.lang_dataset)
-                self.lang_train, self.lang_val = random_split(
-                    self.lang_dataset, [num_tr, num_val]
+                num_tr, num_val = self.split_tr_and_val(self.datasets["language"])
+                (
+                    self.datasets["train/language"],
+                    self.datasets["val/language"],
+                ) = random_split(
+                    self.datasets["language"],
+                    [num_tr, num_val],
+                    generator=torch.Generator().manual_seed(self.hparams.seed),
                 )
                 self.logger.info(f"Language dataset train size: {num_tr}")
                 self.logger.info(f"Language dataset val size: {num_val}")

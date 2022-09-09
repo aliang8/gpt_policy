@@ -4,19 +4,34 @@ model_conf:
   pred_done: True
   pred_progress: False
   binary_pos_weight: null
-  data_dir: /data/anthony/ET/data/small_test
-  ET_ROOT: /data/anthony/ET
+  data_dir: /misery/anthony/alfred_orig_lmdb_2.1.0
+  stochastic: False
+  continuous_actions: False
+  state_dim: 256
+  action_dim: 2 # one for action and another for target obj
+  alpha_lr: 1e-4
+  weight_decay: 0.99
+  log_std_min: -20
+  log_std_max: 2
 
   # loss weighting
-  lang_only_pred_loss_weight: 1.0
+  language_only:
+    pred_loss_weight: 1.0
 
-  behavior_only_action_pred_loss_weight: 1.0
+  behavior_only:
+    action_pred_loss_weight: 1.0
+    target_pred_loss_weight: 1.0
+    entropy_loss_weight: 1.0
+    log_alpha_loss_weight: 1.0
+
   aux_pred_loss_weight: 1.0
 
-  paired_aux_pred_loss_weight: 1.0
-  paired_lang_pred_loss_weight: 1.0
-  paired_action_pred_loss_weight: 1.0
-  paired_target_pred_loss_weight: 1.0
+  paired:
+    lang_pred_loss_weight: 1.0
+    action_pred_loss_weight: 1.0
+    target_pred_loss_weight: 1.0
+    entropy_loss_weight: 1.0
+    log_alpha_loss_weight: 1.0
 
   state_encoder:  
     enc_method: mlp

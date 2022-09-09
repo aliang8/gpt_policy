@@ -4,10 +4,10 @@ data_conf:
   split:
     train: 0.8
     val: 0.2
-  batch_size: 4
   data_dir: /data/anthony/gpt_policy/data/kitchen
   state_dim: 60
   action_dim: 9
+  seed: 42
   modalities:
     # - behavior
     - paired
@@ -37,7 +37,8 @@ data_conf:
       data_dir: ${data_conf.data_dir} 
       discretize_actions: False
       num_bins: 256
-      chunk_size: 512
+      chunk_size: ${data_conf.paired_dataset_cls.hparams.chunk_size}
+      return_conditioned: True 
       input_format: v1      
 
   language_datasets: 

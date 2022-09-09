@@ -90,6 +90,15 @@ def padded_3d(
     return output
 
 
+def padded_first_dim(tensors):
+    # merge tensors together that have different length
+    max_ = max([v.shape[0] for v in tensors])
+    output = torch.zeros((len(tensors), max_, *tensors[0].shape[1:]))
+    for i, v in enumerate(tensors):
+        output[i, : v.shape[0]] = v
+    return output
+
+
 def collate_fn(data):
     # custom collate fn for pad on the fly and sorted examples
     # sort examples by sequence length so we batch together the longest sequences
@@ -98,10 +107,16 @@ def collate_fn(data):
     output = AttrDict()
     for k in list(data[0].keys()):
         vs = [torch.Tensor(data[i][k]) for i in range(bs)]
+        # print(k, vs[0].shape)
 
         # pad all to the same length
         if len(vs[0].shape) == 1:
             output[k], _ = padded_tensor(vs, pad_idx=0, left_padded=False)
         elif len(vs[0].shape) == 2:
             output[k] = padded_3d(vs, pad_idx=0, dtype=torch.float)
+        else:
+            output[k] = padded_first_dim(vs)
+
+        # print(k, output[k].shape)
+
     return output
